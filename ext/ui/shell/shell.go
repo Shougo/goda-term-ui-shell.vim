@@ -381,6 +381,8 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 		_, err := job.Write([]byte(commandLine + "\n"))
 		return false, err
 	}
+	// (Of several lines, pasted: the empty line after them.)
+	commandLine = strings.TrimRight(commandLine, " \t\n")
 	if commandLine == "" {
 		return false, nil
 	}
@@ -627,7 +629,9 @@ func (t *instance) builtins() map[string]builtin {
 			}
 			bufnr, _, _ := t.get()
 			if len(lines) > 0 {
-				_, err = h.Call(ctx, "goda_term#ui#shell#_append", bufnr, lines)
+				// (A command line of several lines, each.)
+				_, err = h.Call(ctx, "goda_term#ui#shell#_append", bufnr,
+					strings.Split(strings.Join(lines, "\n"), "\n"))
 			}
 			return false, false, err
 		},
@@ -741,6 +745,12 @@ func (t *instance) Actions() map[string]term.Action {
 			line := info.CommandLine
 			if line == "" {
 				line = t.expandDirectory(ctx, h, info.Cfile)
+			}
+			// A quote not closed, or a backslash at the end: it goes on in
+			// the next line, as in a shell.
+			if bufnr, _, job := t.get(); job == nil && !info.NotLast && incomplete(line) {
+				_, err := h.Call(ctx, "goda_term#ui#shell#_continue", bufnr)
+				return err
 			}
 			if info.NotLast || line == "" {
 				// A command line of the history.

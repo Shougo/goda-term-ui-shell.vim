@@ -62,7 +62,10 @@ function! goda_term#ui#shell#_switch(params, bufnr) abort
   return getbufoneline(a:bufnr, '$')
 endfunction
 
-" A new prompt (the user prompt above it), with {command_line} typed.
+" A new prompt (the user prompt above it), with {command_line} typed (its
+" lines after the first under it). b:goda_term_ui_shell_prompt_lnum is the
+" line of the prompt: the lines under it go on with its command line (0:
+" there is output).
 function! goda_term#ui#shell#_new_command_line(bufnr, params, command_line) abort
   let prompt = a:params.prompt . ' '
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', prompt)
@@ -82,14 +85,16 @@ function! goda_term#ui#shell#_new_command_line(bufnr, params, command_line) abor
       call deletebufline(a:bufnr, pos + 1, '$')
     endif
   endif
-  let prompt_lines = user_prompts + [prompt . a:command_line]
+  let [first; rest] = split(a:command_line, "\n", 1)
+  let prompt_lines = user_prompts + [prompt . first] + rest
   if last ==# '' || last ==# prompt
     call setbufline(a:bufnr, '$', prompt_lines)
   else
     call appendbufline(a:bufnr, '$', prompt_lines)
   endif
   call setbufvar(a:bufnr, '&modified', 0)
-  let lnum = len(getbufline(a:bufnr, 1, '$'))
+  let lnum = len(getbufline(a:bufnr, 1, '$')) - len(rest)
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', lnum)
   let row = lnum - 1
   for _ in user_prompts
     call s:highlight(a:params.userPromptHighlight, 'userPrompt', 1, a:bufnr, row, 1, 0)
@@ -116,28 +121,63 @@ endfunction
 
 " The command line of the cursor: its line without the prompt ({prompt},
 " the last one, when the line is not one of {pattern}), or '' when it is not
-" a prompt line.
+" a prompt line. In the last prompt, its lines (a quote not closed, a
+" backslash at the end, or pasted) are one command line.
 function! goda_term#ui#shell#_command_line(pattern, prompt) abort
+  let prompt_lnum = s:prompt_lnum()
+  if prompt_lnum > 0
+    return join([s:strip_prompt(getline(prompt_lnum), a:pattern, a:prompt)]
+          \ + getline(prompt_lnum + 1, '$'), "\n")
+  endif
   let line = getline('.')
   if line !~# a:pattern && line('.') != line('$')
     return ''
   endif
-  let sub = substitute(line, a:pattern, '', '')
-  return sub ==# line ? line[len(a:prompt) :] : sub
+  return s:strip_prompt(line, a:pattern, a:prompt)
+endfunction
+
+function! s:strip_prompt(line, pattern, prompt) abort
+  let sub = substitute(a:line, a:pattern, '', '')
+  return sub ==# a:line ? a:line[len(a:prompt) :] : sub
+endfunction
+
+" The line of the last prompt, when the cursor is in its command line (0
+" otherwise).
+function! s:prompt_lnum() abort
+  let lnum = get(b:, 'goda_term_ui_shell_prompt_lnum', 0)
+  return lnum > 0 && line('.') >= lnum ? lnum : 0
 endfunction
 
 " For executeLine: the command line, the file under the cursor, and whether
-" the cursor is not on the last line.
+" the cursor is not in the last command line.
 function! goda_term#ui#shell#_line_info(pattern, prompt) abort
   return #{commandLine: goda_term#ui#shell#_command_line(a:pattern, a:prompt),
-        \ cfile: expand('<cfile>'), notLast: line('.') != line('$') ? v:true : v:false}
+        \ cfile: expand('<cfile>'),
+        \ notLast: line('.') != line('$') && s:prompt_lnum() == 0 ? v:true : v:false}
 endfunction
 
-" What is typed before the cursor.
+" What is typed before the cursor (in a line under the prompt: of that line,
+" which has no prompt).
 function! goda_term#ui#shell#_input(pattern, prompt) abort
-  let line = goda_term#ui#shell#_command_line(a:pattern, a:prompt)
+  let prompt_lnum = s:prompt_lnum()
+  if prompt_lnum > 0 && line('.') > prompt_lnum
+    let end = col('.') - (mode() ==# 'n' ? 1 : 2)
+    return end < 0 ? '' : getline('.')[: end]
+  endif
+  let line = getline('.')
+  let line = line !~# a:pattern && line('.') != line('$') ? ''
+        \ : s:strip_prompt(line, a:pattern, a:prompt)
   let end = col('.') - (mode() ==# 'n' ? 2 : 3)
   return end < 0 ? '' : line[: end]
+endfunction
+
+" The command line goes on in a new line (a quote not closed, a backslash
+" at the end), as in a shell.
+function! goda_term#ui#shell#_continue(bufnr) abort
+  call appendbufline(a:bufnr, '$', '')
+  call setbufvar(a:bufnr, '&modified', 0)
+  call goda_term#ui#shell#_move_cursor_last(a:bufnr)
+  redraw
 endfunction
 
 " The output lines from {lnum} (replaced), with their highlights: [line
@@ -157,6 +197,7 @@ function! goda_term#ui#shell#_flush(bufnr, lnum, lines, highlights) abort
     call s:highlight(group, name, priority, a:bufnr, a:lnum + row, col, length)
   endfor
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', getbufoneline(a:bufnr, '$'))
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
   call setbufvar(a:bufnr, '&modified', 0)
   call goda_term#ui#shell#_move_cursor_last(a:bufnr)
   redraw
@@ -169,6 +210,7 @@ endfunction
 function! goda_term#ui#shell#_running(bufnr) abort
   call appendbufline(a:bufnr, '$', '')
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', '')
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
   call setbufvar(a:bufnr, '&modified', 0)
   call goda_term#ui#shell#_move_cursor_last(a:bufnr)
   redraw
@@ -184,6 +226,7 @@ function! goda_term#ui#shell#_message(bufnr, msg) abort
     call appendbufline(a:bufnr, '$', a:msg)
   endif
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', a:msg)
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
   call goda_term#ui#shell#_move_cursor_last(a:bufnr)
 endfunction
 
@@ -211,6 +254,10 @@ function! goda_term#ui#shell#_check_prompt() abort
   endif
   let line = getline('.')
   if line ==# ''
+    return
+  endif
+  if s:prompt_lnum() > 0 && line('.') > s:prompt_lnum()
+    " A line of the command line under the prompt.
     return
   endif
   if line('$') == line('.')

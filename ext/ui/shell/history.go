@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
-// The history file: a command line a line, the newest last.
+// The history file: a command line a line, the newest last. A command line
+// of several lines has a backslash at the end of each but the last, as zsh
+// writes it.
 
-// readHistory is the lines of path, without consecutive duplicates.
+// readHistory is the command lines of path, without consecutive duplicates.
 func readHistory(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -16,8 +18,29 @@ func readHistory(path string) ([]string, error) {
 		}
 		return nil, err
 	}
-	return dedup(nonEmpty(strings.Split(string(b), "\n"))), nil
+	return dedup(nonEmpty(entries(string(b)))), nil
 }
+
+// entries are the command lines of the history data.
+func entries(data string) []string {
+	var out []string
+	var cur []string
+	for _, l := range strings.Split(data, "\n") {
+		if strings.HasSuffix(l, "\\") {
+			cur = append(cur, strings.TrimSuffix(l, "\\"))
+			continue
+		}
+		out = append(out, strings.Join(append(cur, l), "\n"))
+		cur = nil
+	}
+	if cur != nil {
+		out = append(out, strings.Join(cur, "\n"))
+	}
+	return out
+}
+
+// escape is the command line as the history has it.
+func escape(line string) string { return strings.ReplaceAll(line, "\n", "\\\n") }
 
 func nonEmpty(lines []string) []string {
 	out := lines[:0]
@@ -45,7 +68,7 @@ func appendHistory(path, line string, limit int) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(line + "\n"); err != nil {
+	if _, err := f.WriteString(escape(line) + "\n"); err != nil {
 		f.Close()
 		return err
 	}
@@ -62,14 +85,18 @@ func trimHistory(path string, limit int) error {
 	if err != nil {
 		return err
 	}
-	lines := nonEmpty(strings.Split(string(b), "\n"))
+	lines := nonEmpty(entries(string(b)))
 	if limit <= 0 || len(lines) <= limit {
 		return nil
 	}
 	lines = dedup(lines[max(0, len(lines)-2*limit):])
 	lines = lines[max(0, len(lines)-limit):]
+	var data strings.Builder
+	for _, l := range lines {
+		data.WriteString(escape(l) + "\n")
+	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(data.String()), 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

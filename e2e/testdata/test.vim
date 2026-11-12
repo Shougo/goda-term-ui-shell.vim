@@ -140,6 +140,32 @@ function! s:shell() abort
     call goda_term#ui#do_action('send', #{str: 'echo x'})
     call s:wait('getline("$") ==# "% pushed"')
 
+    " A command line of several lines. A quote not closed: it goes on in the
+    " next line (what is typed there stays), and the lines are one command.
+    call goda_term#ui#do_action('setCommandLine', #{str: 'echo "a'})
+    call goda_term#ui#do_action('executeLine')
+    call s:check('continued', getline(line('$') - 1, '$'), ['% echo "a', ''])
+    call feedkeys("Ab\"\<Esc>", 'xt')
+    call s:check('typed in the next line', getline('$'), 'b"')
+    call goda_term#ui#do_action('executeLine')
+    call s:wait('getline("$") ==# "% "')
+    call s:check('several lines', getline(line('$') - 5, line('$') - 2), ['% echo "a', 'b"', 'a', 'b'])
+    let h = readfile(history)
+    call s:check('history of several lines', h[index(h, 'echo "a\') :][: 1], ['echo "a\', 'b"'])
+    " Pasted (an empty line in it).
+    call goda_term#ui#do_action('setCommandLine', #{str: "printf '%s|' \"tag\n\n- faster\""})
+    call s:check('pasted', getline(line('$') - 2, '$'), ["% printf '%s|' \"tag", '', '- faster"'])
+    call goda_term#ui#do_action('executeLine')
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "- faster|") >= 0')
+    let lnum = index(getline(1, '$'), '- faster|') + 1
+    call s:check('pasted output', getline(lnum - 2, lnum), ['tag', '', '- faster|'])
+    " A new line out of quotes: a second command, not run.
+    call s:errmsgs()
+    call goda_term#ui#do_action('setCommandLine', #{str: "echo 1\necho 2"})
+    call goda_term#ui#do_action('executeLine')
+    call s:check('several commands', s:errmsgs() =~# 'one at a time', v:true)
+    call s:check('several commands prompt', getline('$'), '% ')
+
     " A command that goes on: terminated.
     call goda_term#ui#do_action('send', #{str: 'sleep 30'})
     sleep 200m

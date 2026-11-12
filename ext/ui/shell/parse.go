@@ -31,9 +31,28 @@ type token struct {
 	segments []segment
 }
 
-var errUnclosedQuote = errors.New("unclosed quote")
+var (
+	errUnclosedQuote = errors.New("unclosed quote")
+	// errSeveralLines: a new line out of quotes, which ends a command in a
+	// shell. There is one command at a time here.
+	errSeveralLines = errors.New("several command lines: one at a time")
+)
+
+// incomplete: input goes on in the next line, as in a shell: a quote is
+// not closed, or it ends with a backslash.
+func incomplete(input string) bool {
+	_, trailing, err := scanTokens(input)
+	return trailing || errors.Is(err, errUnclosedQuote)
+}
 
 func parseTokens(input string) ([]token, error) {
+	toks, _, err := scanTokens(input)
+	return toks, err
+}
+
+// scanTokens is the tokens of input, and whether it ends with a backslash
+// (which is kept then).
+func scanTokens(input string) (result []token, trailing bool, err error) {
 	type state int
 	const (
 		normal state = iota
@@ -43,7 +62,6 @@ func parseTokens(input string) ([]token, error) {
 		escDouble
 		escSingle
 	)
-	var result []token
 	var segs []segment
 	var buf strings.Builder
 	inToken, force := false, false
@@ -83,6 +101,8 @@ func parseTokens(input string) ([]token, error) {
 				if inToken {
 					push()
 				}
+			case '\n':
+				return nil, false, errSeveralLines
 			default:
 				if quote != quoteNone {
 					flush()
@@ -142,14 +162,15 @@ func parseTokens(input string) ([]token, error) {
 	}
 	switch st {
 	case inDouble, inSingle, escDouble, escSingle:
-		return nil, errUnclosedQuote
+		return nil, false, errUnclosedQuote
 	case escNormal:
 		buf.WriteByte('\\')
+		trailing = true
 	}
 	if inToken {
 		push()
 	}
-	return result, nil
+	return result, trailing, nil
 }
 
 // splitArgs is the words of input, without expansions.

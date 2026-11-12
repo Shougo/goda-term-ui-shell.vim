@@ -31,3 +31,27 @@ func TestHistory(t *testing.T) {
 		t.Errorf("trimmed %q", b)
 	}
 }
+
+// A command line of several lines is one entry, written as zsh does.
+func TestHistorySeveralLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history")
+	multi := "git tag -m \"v1\n\n- fix\""
+	for _, l := range []string{"cmd1", multi, "cmd2"} {
+		if err := appendHistory(path, l, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, _ := os.ReadFile(path); string(b) != "cmd1\ngit tag -m \"v1\\\n\\\n- fix\"\ncmd2\n" {
+		t.Errorf("written %q", b)
+	}
+	if got, _ := readHistory(path); !slices.Equal(got, []string{"cmd1", multi, "cmd2"}) {
+		t.Errorf("read %q", got)
+	}
+	// Trimmed by entries.
+	if err := trimHistory(path, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readHistory(path); !slices.Equal(got, []string{multi, "cmd2"}) {
+		t.Errorf("trimmed %q", got)
+	}
+}

@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,5 +77,35 @@ func TestParseCommandLine(t *testing.T) {
 	files := slices.Sorted(slices.Values(p.args[1:3]))
 	if p.args[0] != "ls" || !slices.Equal(files, []string{"a.txt", "b.txt"}) || p.args[3] != "nomatch*" {
 		t.Errorf("glob: %q", p.args)
+	}
+}
+
+// A command line goes on in the next line when a quote is not closed or it
+// ends with a backslash; a new line out of quotes is a second command.
+func TestIncomplete(t *testing.T) {
+	for in, want := range map[string]bool{
+		`echo "a`:                 true,
+		"echo 'a":                 true,
+		`echo a\`:                 true,
+		"echo \"a\nb\"":           false,
+		"echo \"a\nb":             true,
+		"echo a \\\nb":            false,
+		"echo a":                  false,
+		`echo "a\"`:               true,
+		"git tag -m \"x\n\n- y\"": false,
+	} {
+		if got := incomplete(in); got != want {
+			t.Errorf("incomplete(%q) = %v, want %v", in, got, want)
+		}
+	}
+	got, err := splitArgs("git tag -a v0.2.0 -m \"ng v0.2.0\n\n- Start faster\"")
+	if want := []string{"git", "tag", "-a", "v0.2.0", "-m", "ng v0.2.0\n\n- Start faster"}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("several lines: %q %v, want %q", got, err, want)
+	}
+	if got, err := splitArgs("echo a \\\nb"); err != nil || !slices.Equal(got, []string{"echo", "a", "b"}) {
+		t.Errorf("backslash at the end: %q %v", got, err)
+	}
+	if _, err := splitArgs("echo 1\necho 2"); !errors.Is(err, errSeveralLines) {
+		t.Errorf("two commands: %v", err)
 	}
 }

@@ -29,7 +29,14 @@ Its 'filetype' is "goda-term-shell".
 The command line is not given to a shell: it is words with quotes and
 backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~ and globs;
 no pipes, no redirections.  A directory alone ("../", "./sub", "/tmp") is
-"cd" to it.  The builtins:
+"cd" to it.
+
+A command line goes on in the lines under its prompt, as in a shell: a
+quote not closed, or a backslash at the end, makes "executeLine" go to a
+new line instead.  A command line pasted with its lines is executed as one.
+A new line out of quotes would start a second command: it is an error.
+
+The builtins:
 
 cd [{dir}]	Change the directory ($HOME without one, "-" the previous one):
 		that of Vim too (|chdir()|, |DirChanged|).
@@ -89,7 +96,9 @@ shellHistoryMax		(number)
 		Default: 500
 
 shellHistoryPath	(string)
-		The history file.
+		The history file.  A command line of several lines has a
+		backslash at the end of each line but the last (as zsh writes
+		it).
 
 split			(string)
 		"" (the current window), "horizontal", "vertical", "farleft",
@@ -117,7 +126,8 @@ ACTIONS                                            *goda-term-ui-shell-actions*
 cd		{directory}: the shell goes there.
 executeLine	Execute the command line of the cursor (that of another
 		prompt: in a new prompt).  Typed in the command running, if
-		any.
+		any.  With a quote not closed, or a backslash at the end: a new
+		line of it.
 insert		{str}: typed in the command running, or in a new prompt.
 nextPrompt	The cursor goes to the next prompt.
 pastePrompt	The command line of the cursor, in a new prompt.
