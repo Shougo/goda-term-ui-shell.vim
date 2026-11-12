@@ -469,6 +469,11 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 	t.mu.Lock()
 	t.job = j
 	t.mu.Unlock()
+	// The line of its output, before it writes anything (a build that is
+	// quiet for long shows that it runs).
+	if _, err := h.Call(ctx, "goda_term#ui#shell#_running", bufnr); err != nil {
+		log.Printf("goda-term: %v", err)
+	}
 	go t.output(h, p, j, bufnr, promptLine)
 	return true, nil
 }

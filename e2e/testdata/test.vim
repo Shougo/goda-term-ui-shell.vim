@@ -114,6 +114,9 @@ function! s:shell() abort
     call s:wait('index(getline(1, "$"), "aliased") >= 0 && getline("$") ==# "% "')
     call goda_term#ui#do_action('send', #{str: 'false'})
     call s:wait('index(getline(1, "$"), "goda-term: exit 1") >= 0 && getline("$") ==# "% "')
+    " Nothing written: the next prompt where its output would be.
+    let lnum = index(getline(1, '$'), 'goda-term: exit 1') + 1
+    call s:check('no output', getline(lnum - 1), '% false')
     call s:errmsgs()
     call goda_term#ui#do_action('send', #{str: 'no-such-command-x'})
     call s:check('not executable', s:errmsgs() =~# 'not an executable', v:true)
@@ -140,8 +143,15 @@ function! s:shell() abort
     " A command that goes on: terminated.
     call goda_term#ui#do_action('send', #{str: 'sleep 30'})
     sleep 200m
+    " Before it writes anything, a new line shows that it runs, the cursor
+    " there (as in a terminal).
+    call s:check('running', [getline(line('$') - 1, '$'), line('.')],
+          \ [['% sleep 30', ''], line('$')])
     call goda_term#ui#do_action('terminate')
     call s:wait('getline("$") ==# "% "')
+    " What it ends with is on that line, then the next prompt.
+    call s:check('after running', getline(line('$') - 3, '$'),
+          \ ['% sleep 30', 'goda-term: exit -1', '| user', '% '])
 
     " The builtins with and time.
     call goda_term#ui#do_action('send', #{str: 'with echo'})

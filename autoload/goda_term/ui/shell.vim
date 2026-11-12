@@ -162,10 +162,27 @@ function! goda_term#ui#shell#_flush(bufnr, lnum, lines, highlights) abort
   redraw
 endfunction
 
+" A command started: a new line under its prompt, as a terminal makes, so
+" that it shows that it runs also before it writes anything. Its output
+" goes there (and what is typed there goes to it); the next prompt does,
+" when it writes nothing.
+function! goda_term#ui#shell#_running(bufnr) abort
+  call appendbufline(a:bufnr, '$', '')
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', '')
+  call setbufvar(a:bufnr, '&modified', 0)
+  call goda_term#ui#shell#_move_cursor_last(a:bufnr)
+  redraw
+endfunction
+
 " A message after the output: it is the prompt, for the input typed after
-" it.
+" it. On the last line when it is empty (the line of the output of a command
+" that wrote nothing on it), as a terminal writes.
 function! goda_term#ui#shell#_message(bufnr, msg) abort
-  call appendbufline(a:bufnr, '$', a:msg)
+  if getbufoneline(a:bufnr, '$') ==# ''
+    call setbufline(a:bufnr, '$', a:msg)
+  else
+    call appendbufline(a:bufnr, '$', a:msg)
+  endif
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', a:msg)
   call goda_term#ui#shell#_move_cursor_last(a:bufnr)
 endfunction
