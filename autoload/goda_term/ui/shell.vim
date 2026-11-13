@@ -2,6 +2,8 @@
 " of the commands.
 
 let s:namespace = has('nvim') ? nvim_create_namespace('goda-term-ui-shell') : 0
+" (The highlight of the command line being typed.)
+let s:cl_namespace = has('nvim') ? nvim_create_namespace('goda-term-ui-shell-command-line') : 0
 
 " The params whose values are expressions (exprParams), evaluated: with
 " uiParams, the params as they were given.
@@ -50,6 +52,8 @@ function! goda_term#ui#shell#_new(name, params) abort
     autocmd! * <buffer>
     autocmd CursorMovedI,TextChangedI,TextChangedP,InsertEnter <buffer>
           \ call goda_term#ui#shell#_check_prompt()
+    autocmd TextChanged,TextChangedI,TextChangedP <buffer>
+          \ call s:notify_command_line(bufnr('%'))
   augroup END
   setlocal filetype=goda-term-shell
   return bufnr
@@ -95,6 +99,9 @@ function! goda_term#ui#shell#_new_command_line(bufnr, params, command_line) abor
   call setbufvar(a:bufnr, '&modified', 0)
   let lnum = len(getbufline(a:bufnr, 1, '$')) - len(rest)
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', lnum)
+  if a:command_line !=# ''
+    call s:notify_command_line(a:bufnr)
+  endif
   let row = lnum - 1
   for _ in user_prompts
     call s:highlight(a:params.userPromptHighlight, 'userPrompt', 1, a:bufnr, row, 1, 0)
@@ -302,4 +309,59 @@ function! s:highlight(group, name, priority, bufnr, row, col, length) abort
   else
     call prop_add(a:row, a:col, #{length: length, type: a:name, bufnr: a:bufnr})
   endif
+endfunction
+
+" The command line being typed in {bufnr} goes to be highlighted (as
+" fast-syntax-highlighting does in zsh): the highlight comes back with
+" goda_term#ui#shell#_highlight_command_line().
+function! s:notify_command_line(bufnr) abort
+  let lnum = getbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
+  let name = getbufvar(a:bufnr, 'goda_term_name', '')
+  if lnum <= 0 || name ==# '' || !goda#is_running('term')
+    return
+  endif
+  let prompt = getbufvar(a:bufnr, 'goda_term_ui_shell_prompt', '')
+  let lines = getbufline(a:bufnr, lnum, '$')
+  if empty(lines) || stridx(lines[0], prompt) != 0
+    return
+  endif
+  call goda#notify('term', 'uiAction', name, 'highlightCommandLine',
+        \ #{bufnr: a:bufnr, changedtick: getbufvar(a:bufnr, 'changedtick'),
+        \ lnum: lnum, col: len(prompt) + 1, lines: lines, path: $PATH})
+endfunction
+
+" The highlight of the command line from line {lnum} of {bufnr}: {spans}
+" (#{lnum, col, length, group, name, priority}), when it is still that of
+" {changedtick}.
+function! goda_term#ui#shell#_highlight_command_line(bufnr, changedtick, lnum, spans) abort
+  if getbufvar(a:bufnr, 'changedtick') != a:changedtick
+    return
+  endif
+  let last = getbufinfo(a:bufnr)[0].linecount
+  if has('nvim')
+    call nvim_buf_clear_namespace(a:bufnr, s:cl_namespace, a:lnum - 1, -1)
+  else
+    for name in getbufvar(a:bufnr, 'goda_term_ui_shell_command_line_types', [])
+      call prop_remove(#{type: name, bufnr: a:bufnr, all: v:true}, a:lnum, last)
+    endfor
+  endif
+  for s in a:spans
+    if !hlexists(s.group) || s.lnum > last
+      continue
+    endif
+    if has('nvim')
+      call nvim_buf_set_extmark(a:bufnr, s:cl_namespace, s.lnum - 1, s.col - 1,
+            \ #{end_col: s.col - 1 + s.length, hl_group: s.group, priority: s.priority})
+      continue
+    endif
+    " (A type a group: the group of a kind may be another in the next session.)
+    let name = s.name . '_' . s.group
+    if empty(prop_type_get(name, #{bufnr: a:bufnr}))
+      call prop_type_add(name, #{bufnr: a:bufnr, highlight: s.group,
+            \ priority: s.priority, combine: v:true})
+      let types = getbufvar(a:bufnr, 'goda_term_ui_shell_command_line_types', [])
+      call setbufvar(a:bufnr, 'goda_term_ui_shell_command_line_types', types + [name])
+    endif
+    call prop_add(s.lnum, s.col, #{length: s.length, type: name, bufnr: a:bufnr})
+  endfor
 endfunction

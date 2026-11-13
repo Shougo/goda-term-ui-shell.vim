@@ -40,7 +40,10 @@ type Params struct {
 	// Aliases replace the first word of a command line.
 	Aliases             map[string]string   `json:"aliases"`
 	ANSIColorHighlights ANSIColorHighlights `json:"ansiColorHighlights"`
-	Cwd                 string              `json:"cwd"`
+	// CommandLineHighlights are the groups of the command line being typed,
+	// by kind (DefaultCommandLineHighlights; "": none).
+	CommandLineHighlights map[string]string `json:"commandLineHighlights"`
+	Cwd                   string            `json:"cwd"`
 	// ExprParams are the params whose strings are Vim expressions (of
 	// uiParams, the params).
 	ExprParams     []string `json:"exprParams"`
@@ -77,21 +80,22 @@ type Params struct {
 // DefaultParams are those of ddt-ui-shell.
 func DefaultParams() Params {
 	return Params{
-		Aliases:             map[string]string{},
-		ExprParams:          []string{"winCol", "winRow", "winHeight", "winWidth"},
-		FloatingBorder:      "",
-		FlushIntervalMs:     100,
-		PasswordPattern:     `(Enter |Repeat |[Oo]ld |[Nn]ew |login |Kerberos |EncFS |CVS |UNIX | SMB |LDAP |\[sudo( \w*)?\] )([Pp]assword|[Pp]assphrase)`,
-		Prompt:              "%",
-		PromptHighlight:     "Identifier",
-		PromptPattern:       "% ",
-		ShellHistoryMax:     500,
-		UserPromptHighlight: "Special",
-		UserPromptPattern:   "| .*",
-		WinCol:              "(&columns - eval(uiParams.winWidth)) / 2",
-		WinHeight:           20,
-		WinRow:              "&lines / 2 - 10",
-		WinWidth:            "&columns / 2",
+		Aliases:               map[string]string{},
+		CommandLineHighlights: DefaultCommandLineHighlights(),
+		ExprParams:            []string{"winCol", "winRow", "winHeight", "winWidth"},
+		FloatingBorder:        "",
+		FlushIntervalMs:       100,
+		PasswordPattern:       `(Enter |Repeat |[Oo]ld |[Nn]ew |login |Kerberos |EncFS |CVS |UNIX | SMB |LDAP |\[sudo( \w*)?\] )([Pp]assword|[Pp]assphrase)`,
+		Prompt:                "%",
+		PromptHighlight:       "Identifier",
+		PromptPattern:         "% ",
+		ShellHistoryMax:       500,
+		UserPromptHighlight:   "Special",
+		UserPromptPattern:     "| .*",
+		WinCol:                "(&columns - eval(uiParams.winWidth)) / 2",
+		WinHeight:             20,
+		WinRow:                "&lines / 2 - 10",
+		WinWidth:              "&columns / 2",
 	}
 }
 
@@ -796,6 +800,35 @@ func (t *instance) Actions() map[string]term.Action {
 			return err
 		}),
 		// redraw: the prompt again.
+		// The command line being typed is highlighted (the buffer notifies
+		// it as it changes: lines from lnum, the first from byte col, at
+		// changedtick, and $PATH).
+		"highlightCommandLine": anywhere(func(ctx context.Context, h sdk.Host, _ term.Args, p Params, ap term.Params) error {
+			var req struct {
+				Bufnr       int      `json:"bufnr"`
+				Changedtick int      `json:"changedtick"`
+				Lnum        int      `json:"lnum"`
+				Col         int      `json:"col"`
+				Lines       []string `json:"lines"`
+				Path        string   `json:"path"`
+			}
+			if err := sdk.Decode(map[string]any(ap), &req); err != nil {
+				return err
+			}
+			bufnr, cwd, job := t.get()
+			if req.Bufnr != bufnr || job != nil {
+				return nil
+			}
+			home, _ := os.UserHomeDir()
+			env := hlEnv{cwd: cwd, home: home, path: req.Path, aliases: p.Aliases,
+				builtins: map[string]bool{}}
+			for name := range t.builtins() {
+				env.builtins[name] = true
+			}
+			spans := commandLineSpans(req.Lines, req.Lnum, req.Col, env, p.CommandLineHighlights)
+			_, err := h.Call(ctx, "goda_term#ui#shell#_highlight_command_line", bufnr, req.Changedtick, req.Lnum, spans)
+			return err
+		}),
 		"redraw": inBuffer(func(ctx context.Context, h sdk.Host, _ term.Args, p Params, _ term.Params) error {
 			bufnr, _, _ := t.get()
 			v, err := h.Call(ctx, "getbufoneline", bufnr, "$")

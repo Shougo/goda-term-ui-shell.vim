@@ -15,6 +15,20 @@ let g:goda_term#binary = $GODA_TERM_BINARY
 " goda-term sets it.
 let $EDITOR = ''
 
+" The highlights of the command line in line {lnum}: [col, length, group].
+function! s:cl_highlights(lnum) abort
+  if has('nvim')
+    let ns = nvim_get_namespaces()['goda-term-ui-shell-command-line']
+    return nvim_buf_get_extmarks(0, ns, [a:lnum - 1, 0], [a:lnum - 1, -1], #{details: v:true})
+          \ ->map({ _, m -> [m[2] + 1, m[3].end_col - m[2], m[3].hl_group] })
+          \ ->sort({ a, b -> a[0] - b[0] })
+  endif
+  return prop_list(a:lnum)
+        \ ->filter({ _, p -> p.type =~# '^GodaTermShellCommandLine' })
+        \ ->map({ _, p -> [p.col, p.length, prop_type_get(p.type, #{bufnr: bufnr('%')}).highlight] })
+        \ ->sort({ a, b -> a[0] - b[0] })
+endfunction
+
 function! s:check(name, got, want) abort
   if a:got !=# a:want
     call add(s:errors, printf('%s: got %s, want %s', a:name, string(a:got), string(a:want)))
@@ -139,6 +153,24 @@ function! s:shell() abort
     call s:check('pushBufferStack', getline('$'), '% ')
     call goda_term#ui#do_action('send', #{str: 'echo x'})
     call s:wait('getline("$") ==# "% pushed"')
+
+    " The command line being typed is highlighted (as fast-syntax-highlighting
+    " does): the command by what it is (unknown: Error), options, quotes.
+    call goda_term#ui#do_action('setCommandLine', #{str: "printf -v 'a' nosuchfile"})
+    call s:wait('!empty(s:cl_highlights(line("$")))')
+    call s:check('command line highlight', s:cl_highlights(line('$')),
+          \ [[3, 6, 'Function'], [10, 2, 'Type'], [13, 3, 'String']])
+    " As it is typed.
+    call goda_term#ui#do_action('setCommandLine', #{str: 'prin'})
+    call s:wait('s:cl_highlights(line("$")) ==# [[3, 4, "Error"]]')
+    call s:check('unknown command', s:cl_highlights(line('$')), [[3, 4, 'Error']])
+    call feedkeys("Atf\<Esc>", 'xt')
+    " (feedkeys() types it all at once: no TextChangedI before its end, as
+    " there is after each key typed.)
+    doautocmd <nomodeline> TextChangedI
+    call s:wait('s:cl_highlights(line("$")) ==# [[3, 6, "Function"]]')
+    call s:check('typed', s:cl_highlights(line('$')), [[3, 6, 'Function']])
+    call goda_term#ui#do_action('setCommandLine', #{str: ''})
 
     " A command line of several lines. A quote not closed: it goes on in the
     " next line (what is typed there stays), and the lines are one command.

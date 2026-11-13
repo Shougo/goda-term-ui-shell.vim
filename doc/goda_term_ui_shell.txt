@@ -59,6 +59,25 @@ ansiColorHighlights	(dict)
 		The highlights of the output: "fgs" and "bgs" (16 highlight
 		groups of the ANSI colors), "bold", "italic", "underline".
 
+commandLineHighlights	(dict)
+		The highlights of the command line being typed, as
+		fast-syntax-highlighting makes them in zsh, by kind:
+		"command" (an executable of $PATH, or a path to one),
+		"builtin", "alias", "precommand" ("sudo", "env", ... before
+		the command), "directory" (a path to one: "cd" to it),
+		"unknown" (none of these), "option", "assignment" (NAME= of
+		NAME=value), "singleQuote", "doubleQuote", "variable",
+		"escape", "glob", "path" (one that exists).  A kind of ""
+		is not highlighted.
+		Default: >vim
+		#{alias: 'Function', assignment: 'Identifier',
+		\ builtin: 'Statement', command: 'Function',
+		\ directory: 'Directory', doubleQuote: 'String',
+		\ escape: 'SpecialChar', glob: 'Special', option: 'Type',
+		\ path: 'Underlined', precommand: 'Statement',
+		\ singleQuote: 'String', unknown: 'Error',
+		\ variable: 'Identifier'}
+<
 cwd			(string)
 		The directory.
 		Default: the current directory
