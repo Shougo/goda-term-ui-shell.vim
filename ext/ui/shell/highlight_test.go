@@ -67,6 +67,10 @@ func TestHighlightSpans(t *testing.T) {
 		"":                      nil,
 		"   ":                   nil,
 		`$EDITOR file`:          {"file:path", "$EDITOR:variable"},
+		"mycmd file && nocmd -x; cd sub || ll": {"mycmd:command", "file:path", "&&:separator",
+			"nocmd:unknown", "-x:option", ";:separator", "cd:builtin", "sub:path", "||:separator", "ll:alias"},
+		`mycmd "a && b" x\;y 2>&1`: {"mycmd:command", `"a && b":doubleQuote`, `\;:escape`},
+		"time mycmd&&FOO=1 mycmd":  {"time:builtin", "mycmd:command", "&&:separator", "FOO=:assignment", "mycmd:command"},
 	} {
 		if got := kinds(line, env); !reflect.DeepEqual(got, want) {
 			t.Errorf("%q:\n got %q\nwant %q", line, got, want)

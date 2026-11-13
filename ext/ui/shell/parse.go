@@ -2,6 +2,7 @@ package shell
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,8 +11,9 @@ import (
 
 // The command line, as ddt-ui-shell parses it: words with quotes and
 // backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~, and
-// globs. There are no pipes and no redirections (the command is run
-// directly, not by a shell).
+// globs; and commands one after another with "&&", "||" and ";". There are
+// no pipes and no redirections (each command is run directly, not by a
+// shell).
 
 type quoteKind int
 
@@ -39,10 +41,100 @@ var (
 )
 
 // incomplete: input goes on in the next line, as in a shell: a quote is
-// not closed, or it ends with a backslash.
+// not closed, or it ends with a backslash, "&&" or "||".
 func incomplete(input string) bool {
-	_, trailing, err := scanTokens(input)
+	items, open, err := scanList(input)
+	if err != nil {
+		return errors.Is(err, errUnclosedQuote)
+	}
+	if open {
+		return true
+	}
+	if len(items) == 0 {
+		return false
+	}
+	_, trailing, err := scanTokens(items[len(items)-1].line)
 	return trailing || errors.Is(err, errUnclosedQuote)
+}
+
+// listItem is a command of a command line, and the operator before it
+// ("" for the first one, "&&", "||" or ";").
+type listItem struct {
+	line, op string
+}
+
+var errEmptyCommand = errors.New("a command is missing around")
+
+// splitList is the commands of input. A new line after an operator goes on
+// with the next command.
+func splitList(input string) ([]listItem, error) {
+	items, open, err := scanList(input)
+	if err == nil && open {
+		err = fmt.Errorf("%w %q", errEmptyCommand, items[len(items)-1].op)
+	}
+	return items, err
+}
+
+// scanList splits input at the operators out of quotes; open: it ends
+// with "&&" or "||" (the next command is still to come). A ";" at the end
+// is nothing.
+func scanList(input string) (items []listItem, open bool, err error) {
+	op := ""
+	start := 0
+	const (
+		normal = iota
+		inDouble
+		inSingle
+	)
+	st, esc := normal, false
+	for i := 0; i < len(input); i++ {
+		c := input[i]
+		switch {
+		case esc:
+			esc = false
+		case st == inDouble:
+			switch c {
+			case '\\':
+				esc = true
+			case '"':
+				st = normal
+			}
+		case st == inSingle:
+			if c == '\'' {
+				st = normal
+			}
+		case c == '\\':
+			esc = true
+		case c == '"':
+			st = inDouble
+		case c == '\'':
+			st = inSingle
+		case c == ';' || (c == '&' || c == '|') && i+1 < len(input) && input[i+1] == c:
+			// ("&" and "|" alone are words.)
+			n := 1
+			if c != ';' {
+				n = 2
+			}
+			line := strings.TrimSpace(input[start:i])
+			if line == "" {
+				return items, false, fmt.Errorf("%w %q", errEmptyCommand, input[i:i+n])
+			}
+			items = append(items, listItem{line, op})
+			op = input[i : i+n]
+			i += n - 1
+			start = i + 1
+		}
+	}
+	line := strings.TrimSpace(input[start:])
+	switch {
+	case st != normal:
+		return items, false, errUnclosedQuote
+	case line != "":
+		items = append(items, listItem{line, op})
+	case op == "&&" || op == "||":
+		return items, true, nil
+	}
+	return items, false, nil
 }
 
 func parseTokens(input string) ([]token, error) {

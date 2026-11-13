@@ -31,6 +31,12 @@ backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~ and globs;
 no pipes, no redirections.  A directory alone ("../", "./sub", "/tmp") is
 "cd" to it.
 
+Its commands run one after another, as in a shell: "a && b" runs b after a
+succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes
+the directory of the next ones).  A command interrupted ("terminate") ends
+them.  The command line is one line of the history.  "&&" or "||" at the
+end of a line goes on in the next one.
+
 A command line goes on in the lines under its prompt, as in a shell: a
 quote not closed, or a backslash at the end, makes "executeLine" go to a
 new line instead.  A command line pasted with its lines is executed as one.
@@ -65,6 +71,7 @@ commandLineHighlights	(dict)
 		"command" (an executable of $PATH, or a path to one),
 		"builtin", "alias", "precommand" ("sudo", "env", ... before
 		the command), "directory" (a path to one: "cd" to it),
+		"separator" ("&&", "||", ";" between the commands),
 		"unknown" (none of these), "option", "assignment" (NAME= of
 		NAME=value), "singleQuote", "doubleQuote", "variable",
 		"escape", "glob", "path" (one that exists).  A kind of ""
@@ -75,8 +82,8 @@ commandLineHighlights	(dict)
 		\ directory: 'Directory', doubleQuote: 'String',
 		\ escape: 'SpecialChar', glob: 'Special', option: 'Type',
 		\ path: 'Underlined', precommand: 'Statement',
-		\ singleQuote: 'String', unknown: 'Error',
-		\ variable: 'Identifier'}
+		\ separator: 'Operator', singleQuote: 'String',
+		\ unknown: 'Error', variable: 'Identifier'}
 <
 cwd			(string)
 		The directory.
@@ -145,8 +152,8 @@ ACTIONS                                            *goda-term-ui-shell-actions*
 cd		{directory}: the shell goes there.
 executeLine	Execute the command line of the cursor (that of another
 		prompt: in a new prompt).  Typed in the command running, if
-		any.  With a quote not closed, or a backslash at the end: a new
-		line of it.
+		any.  With a quote not closed, or a backslash, "&&" or "||" at
+		the end: a new line of it.
 insert		{str}: typed in the command running, or in a new prompt.
 nextPrompt	The cursor goes to the next prompt.
 pastePrompt	The command line of the cursor, in a new prompt.

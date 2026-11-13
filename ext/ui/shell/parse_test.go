@@ -109,3 +109,35 @@ func TestIncomplete(t *testing.T) {
 		t.Errorf("two commands: %v", err)
 	}
 }
+
+func TestSplitList(t *testing.T) {
+	for in, want := range map[string][]listItem{
+		"go get x@v1 && go mod tidy": {{"go get x@v1", ""}, {"go mod tidy", "&&"}},
+		"a || b; c":                  {{"a", ""}, {"b", "||"}, {"c", ";"}},
+		"a;":                         {{"a", ""}},
+		`echo "a && b" 'c; d' e\;f`:  {{`echo "a && b" 'c; d' e\;f`, ""}},
+		"a 2>&1 | b":                 {{"a 2>&1 | b", ""}},
+		"a &&\n  b":                  {{"a", ""}, {"b", "&&"}},
+		"a&&b":                       {{"a", ""}, {"b", "&&"}},
+	} {
+		if got, err := splitList(in); err != nil || !slices.Equal(got, want) {
+			t.Errorf("splitList(%q) = %q %v, want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"&& a", "a && && b", "a ;; b", "a &&", "; a"} {
+		if _, err := splitList(in); !errors.Is(err, errEmptyCommand) {
+			t.Errorf("splitList(%q): %v", in, err)
+		}
+	}
+	if _, err := splitList(`a && "b`); !errors.Is(err, errUnclosedQuote) {
+		t.Errorf("unclosed: %v", err)
+	}
+	for in, want := range map[string]bool{
+		"a &&": true, "a ||  ": true, "a && b": false, "a;": false, `a && "b`: true,
+		"a && b \\": true, "a && b\nc": false,
+	} {
+		if got := incomplete(in); got != want {
+			t.Errorf("incomplete(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

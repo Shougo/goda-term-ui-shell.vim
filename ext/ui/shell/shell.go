@@ -118,6 +118,18 @@ type instance struct {
 	stack     []string
 	with      []string
 	startTime time.Time
+	// list is the rest of the command line running ("a && b"), nil when
+	// none.
+	list *commandList
+}
+
+// commandList is the commands of a command line still to run after the
+// one running, with what they run with.
+type commandList struct {
+	items   []listItem
+	args    term.Args
+	params  Params
+	environ map[string]string
 }
 
 func params(a term.Args) (Params, error) { return term.DecodeParams(a.Params, DefaultParams()) }
@@ -278,6 +290,7 @@ func (t *instance) newCommandLine(ctx context.Context, h sdk.Host, p Params, com
 	t.mu.Lock()
 	job := t.job
 	t.job = nil
+	t.list = nil
 	if len(t.with) > 0 {
 		commandLine = strings.Join(t.with, " ") + " "
 	}
@@ -327,8 +340,17 @@ func (t *instance) newCdPrompt(ctx context.Context, h sdk.Host, p Params, dir st
 	return nil
 }
 
-// cd changes the directory: "" is $HOME, "-" the previous one.
+// cd changes the directory ("" is $HOME, "-" the previous one), and shows
+// a new prompt.
 func (t *instance) cd(ctx context.Context, h sdk.Host, p Params, dir string) error {
+	if ok, err := t.chdir(ctx, h, dir); !ok || err != nil {
+		return err
+	}
+	return t.newCommandLine(ctx, h, p, "")
+}
+
+// chdir changes the directory: false when dir is not one.
+func (t *instance) chdir(ctx context.Context, h sdk.Host, dir string) (bool, error) {
 	t.mu.Lock()
 	cwd, old := t.cwd, t.oldCwd
 	t.mu.Unlock()
@@ -346,15 +368,13 @@ func (t *instance) cd(ctx context.Context, h sdk.Host, p Params, dir string) err
 	}
 	if !isDir(abs) {
 		printError(ctx, h, dir+" is not a directory.")
-		return nil
+		return false, nil
 	}
 	t.mu.Lock()
 	t.oldCwd, t.cwd = t.cwd, abs
 	t.mu.Unlock()
-	if _, err := h.Call(ctx, "goda_term#ui#shell#_cd", abs); err != nil {
-		return err
-	}
-	return t.newCommandLine(ctx, h, p, "")
+	_, err := h.Call(ctx, "goda_term#ui#shell#_cd", abs)
+	return err == nil, err
 }
 
 // expandDirectory is path as a directory (absolute, ./..., ../..., .../),
@@ -378,9 +398,10 @@ func (t *instance) expandDirectory(ctx context.Context, h sdk.Host, path string)
 }
 
 // execute runs commandLine (or types it in the command running): whether a
-// command was started, which writes the next prompt itself.
+// command was started, which writes the next prompt itself. Its commands
+// ("a && b") run one after another.
 func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Params, commandLine string) (bool, error) {
-	bufnr, cwd, job := t.get()
+	_, cwd, job := t.get()
 	if job != nil {
 		_, err := job.Write([]byte(commandLine + "\n"))
 		return false, err
@@ -390,15 +411,82 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 	if commandLine == "" {
 		return false, nil
 	}
+	items, err := splitList(commandLine)
+	if err != nil || len(items) == 0 {
+		if err != nil {
+			printError(ctx, h, err.Error())
+		}
+		return false, t.newCommandLine(ctx, h, p, "")
+	}
 	environ := map[string]string{}
 	if v, err := h.Call(ctx, "environ"); err == nil {
 		_ = sdk.Decode(v, &environ)
 	}
+	if cl, err := t.parse(cwd, p, items[0].line, environ); err == nil && len(cl.args) > 0 &&
+		!p.noSaveHistory && !slices.Contains(p.NoSaveHistoryCommands, cl.args[0]) {
+		t.appendHistory(ctx, h, p, commandLine)
+	}
+	if len(items) == 1 {
+		started, _, err := t.run(ctx, h, a, p, items[0].line, environ, false)
+		return started, err
+	}
+	t.mu.Lock()
+	t.list = &commandList{items[1:], a, p, environ}
+	t.mu.Unlock()
+	return t.runList(ctx, h, items[0].line)
+}
+
+// runList runs line, then the commands of the list after it, until one is
+// started (its end goes on with the list) or there are no more.
+func (t *instance) runList(ctx context.Context, h sdk.Host, line string) (bool, error) {
+	for {
+		t.mu.Lock()
+		l := t.list
+		t.mu.Unlock()
+		if l == nil {
+			return false, nil
+		}
+		started, code, err := t.run(ctx, h, l.args, l.params, line, l.environ, true)
+		if err != nil || started {
+			return started, err
+		}
+		next, ok := t.next(code)
+		if !ok {
+			return false, t.newCommandLine(ctx, h, l.params, "")
+		}
+		line = next
+	}
+}
+
+// next is the command of the list to run after one that exited with
+// code: "&&" after a success, "||" after a failure, ";" anyway, as in a
+// shell. A command interrupted (by a signal) ends the list.
+func (t *instance) next(code int) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.list == nil {
+		return "", false
+	}
+	if code < 0 || code > 128 {
+		t.list.items = nil
+	}
+	for len(t.list.items) > 0 {
+		it := t.list.items[0]
+		t.list.items = t.list.items[1:]
+		if it.op == ";" || it.op == "&&" && code == 0 || it.op == "||" && code != 0 {
+			return it.line, true
+		}
+	}
+	return "", false
+}
+
+// parse is the command line line, its alias expanded.
+func (t *instance) parse(cwd string, p Params, line string, environ map[string]string) (parsed, error) {
 	getenv := func(k string) (string, bool) {
 		v, ok := environ[k]
 		return v, ok
 	}
-	cl, err := parseCommandLine(cwd, commandLine, getenv)
+	cl, err := parseCommandLine(cwd, line, getenv)
 	if err == nil && len(cl.args) > 0 {
 		if alias, ok := p.Aliases[cl.args[0]]; ok {
 			var c parsed
@@ -406,34 +494,66 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 			cl.args = c.args
 		}
 	}
+	return cl, err
+}
+
+// run runs the command line line, one command: whether it was started (it
+// writes the next prompt itself, or goes on with the list), or how it
+// exited. inList: of a list, which shows the next prompt.
+func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, line string,
+	environ map[string]string, inList bool) (started bool, code int, err error) {
+	bufnr, cwd, _ := t.get()
+	// done: what did not start, and the prompt after it (not in a list).
+	done := func(code int) (bool, int, error) {
+		if inList {
+			return false, code, nil
+		}
+		return false, code, t.newCommandLine(ctx, h, p, "")
+	}
+	cl, err := t.parse(cwd, p, line, environ)
 	if err != nil || len(cl.args) == 0 {
 		if err != nil {
 			printError(ctx, h, err.Error())
 		}
-		return false, t.newCommandLine(ctx, h, p, "")
+		return done(1)
 	}
 	cmd, args := cl.args[0], cl.args[1:]
-	if !p.noSaveHistory && !slices.Contains(p.NoSaveHistoryCommands, cmd) {
-		t.appendHistory(ctx, h, p, commandLine)
+	switch {
+	case cmd == "time":
+		t.mu.Lock()
+		t.startTime = time.Now()
+		t.mu.Unlock()
+		return t.run(ctx, h, a, p, strings.Join(args, " "), environ, inList)
+	case cmd == "cd" && inList:
+		dir := ""
+		if len(args) > 0 {
+			dir = args[0]
+		}
+		ok, err := t.chdir(ctx, h, dir)
+		return false, status(ok), err
 	}
 	if b, ok := t.builtins()[cmd]; ok {
 		started, skip, err := b(ctx, h, a, p, args)
 		if err != nil || started || skip {
-			return started, err
+			return started, 0, err
 		}
-		return false, t.newCommandLine(ctx, h, p, "")
+		return done(0)
 	}
-	if dir := t.expandDirectory(ctx, h, commandLine); dir != "" {
-		return false, t.cd(ctx, h, p, dir)
+	if dir := t.expandDirectory(ctx, h, line); dir != "" {
+		if inList {
+			ok, err := t.chdir(ctx, h, dir)
+			return false, status(ok), err
+		}
+		return false, 0, t.cd(ctx, h, p, dir)
 	}
 	v, err := h.Call(ctx, "exepath", cmd)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	path, _ := v.(string)
 	if path == "" {
 		printError(ctx, h, cmd+" is not an executable file.")
-		return false, t.newCommandLine(ctx, h, p, "")
+		return done(127)
 	}
 	maps := map[string]string{"GIT_PAGER": "cat", "MANPAGER": "cat", "PAGER": "cat", "TERM": "xterm"}
 	env := make([]string, 0, len(environ)+len(cl.env)+len(maps))
@@ -457,12 +577,12 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 	j, err := pty.Start(path, pty.Options{Args: args, Env: env, Dir: cwd, Cols: cols})
 	if err != nil {
 		printError(ctx, h, err.Error())
-		return false, t.newCommandLine(ctx, h, p, "")
+		return done(127)
 	}
 	v, err = h.Call(ctx, "getbufinfo", bufnr)
 	if err != nil {
 		j.Close()
-		return false, err
+		return false, 0, err
 	}
 	var info []struct {
 		Linecount int `json:"linecount"`
@@ -481,7 +601,15 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 		log.Printf("goda-term: %v", err)
 	}
 	go t.output(h, p, j, bufnr, promptLine)
-	return true, nil
+	return true, 0, nil
+}
+
+// status is the exit status of what succeeded or not.
+func status(ok bool) int {
+	if ok {
+		return 0
+	}
+	return 1
 }
 
 // output writes what the command j writes after the line promptLine, then
@@ -582,6 +710,13 @@ loop:
 		_, _ = h.Call(ctx, "goda_term#ui#shell#_message", bufnr,
 			fmt.Sprintf("goda-term: %d ms", time.Since(start).Milliseconds()))
 	}
+	// The next command of the list ("a && b").
+	if next, ok := t.next(code); ok {
+		if _, err := t.runList(ctx, h, next); err != nil {
+			log.Printf("goda-term: %v", err)
+		}
+		return
+	}
 	if err := t.newCommandLine(ctx, h, p, ""); err != nil {
 		log.Printf("goda-term: %v", err)
 	}
@@ -640,12 +775,9 @@ func (t *instance) builtins() map[string]builtin {
 			return false, false, err
 		},
 		// time command...: and how long it took.
-		"time": func(ctx context.Context, h sdk.Host, a term.Args, p Params, args []string) (bool, bool, error) {
-			t.mu.Lock()
-			t.startTime = time.Now()
-			t.mu.Unlock()
-			started, err := t.execute(ctx, h, a, p, strings.Join(args, " "))
-			return started, started, err
+		// (Run by run(): of the command after it.)
+		"time": func(context.Context, sdk.Host, term.Args, Params, []string) (bool, bool, error) {
+			return false, false, nil
 		},
 		// vim file: edited.
 		"vim": func(ctx context.Context, h sdk.Host, _ term.Args, p Params, args []string) (bool, bool, error) {

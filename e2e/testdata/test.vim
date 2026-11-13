@@ -219,6 +219,39 @@ function! s:shell() abort
     call goda_term#ui#do_action('send', #{str: 'time echo t'})
     call s:wait('match(getline(1, "$"), ''^goda-term: \d\+ ms$'') >= 0 && getline("$") ==# "% "')
     call s:check('history of time', index(readfile(history), 'time echo t') >= 0, v:true)
+
+    " Commands one after another: "&&" after a success, "||" after a
+    " failure, ";" anyway; cd among them. One line of the history.
+    call mkdir(dir . '/sub')
+    let line = 'echo l1 && false && echo l2 || echo l3; cd sub && pwd'
+    call goda_term#ui#do_action('send', #{str: line})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), ' . string(dir . '/sub') . ') >= 0')
+    let lnum = index(getline(1, '$'), '% ' . line) + 1
+    call s:check('list', getline(lnum + 1, lnum + 4), ['l1', 'goda-term: exit 1', 'l3', dir . '/sub'])
+    call s:check('list cd', getcwd(), dir . '/sub')
+    call s:check('list history', readfile(history)[-1], line)
+    " "&&" at the end: the next command in the next line.
+    call goda_term#ui#do_action('setCommandLine', #{str: 'echo m1 &&'})
+    call goda_term#ui#do_action('executeLine')
+    call s:check('list continued', getline(line('$') - 1, '$'), ['% echo m1 &&', ''])
+    call feedkeys("Aecho m2\<Esc>", 'xt')
+    call goda_term#ui#do_action('executeLine')
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "m2") >= 0')
+    let lnum = index(getline(1, '$'), '% echo m1 &&') + 1
+    call s:check('list of lines', getline(lnum + 1, lnum + 3), ['echo m2', 'm1', 'm2'])
+    " Ended by one interrupted.
+    call goda_term#ui#do_action('send', #{str: 'sleep 30; echo after'})
+    sleep 200m
+    call goda_term#ui#do_action('terminate')
+    call s:wait('getline("$") ==# "% "')
+    sleep 200m
+    call s:check('list terminated', index(getline(1, '$'), 'after'), -1)
+    " Highlighted: the operators, and the commands after them.
+    call goda_term#ui#do_action('setCommandLine', #{str: 'echo a && nosuch; pwd'})
+    call s:wait('len(s:cl_highlights(line("$"))) == 5')
+    call s:check('list highlight', s:cl_highlights(line('$')),
+          \ [[3, 4, 'Function'], [10, 2, 'Operator'], [13, 6, 'Error'], [19, 1, 'Operator'], [21, 3, 'Function']])
+    call goda_term#ui#do_action('setCommandLine', #{str: ''})
   endif
 
   " Shown again: the same buffer.

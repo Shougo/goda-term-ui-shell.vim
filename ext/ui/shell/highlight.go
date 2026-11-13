@@ -11,7 +11,8 @@ import (
 
 // The highlight of the command line being typed, as fast-syntax-highlighting
 // makes it in zsh: the command by what it is (unknown in red), options,
-// quotes, variables, globs, escapes and the paths that exist.
+// quotes, variables, globs, escapes, the paths that exist, and the
+// operators between the commands ("&&", "||", ";").
 
 // DefaultCommandLineHighlights are the groups of the kinds of the command
 // line ("" for none).
@@ -28,6 +29,7 @@ func DefaultCommandLineHighlights() map[string]string {
 		"option":      "Type",
 		"path":        "Underlined",
 		"precommand":  "Statement",
+		"separator":   "Operator",
 		"singleQuote": "String",
 		"unknown":     "Error",
 		"variable":    "Identifier",
@@ -48,6 +50,8 @@ type hlWord struct {
 	text       string
 	simple     bool
 	inner      []hlSpan
+	// separator: an operator between commands.
+	separator bool
 }
 
 // precommands run the next word as the command (with their options first).
@@ -75,6 +79,10 @@ func highlightSpans(line string, env hlEnv) []hlSpan {
 		inner = append(inner, w.inner...)
 		raw := line[w.start:w.end]
 		switch {
+		case w.separator:
+			// The next word is a command again.
+			out = append(out, hlSpan{w.start, w.end, "separator"})
+			command, pre, skip = true, "", false
 		case skip:
 			// (The argument of an option of sudo.)
 			skip = false
@@ -192,13 +200,19 @@ func scanWords(line string) []hlWord {
 			i += 2
 			continue
 		}
+		if n := separatorAt(line, i); n > 0 {
+			words = append(words, hlWord{start: i, end: i + n, text: line[i : i+n], separator: true})
+			i += n
+			continue
+		}
 		w := hlWord{start: i, simple: true}
 		var text strings.Builder
 	word:
 		for i < len(line) {
 			c := line[i]
 			switch {
-			case c == ' ' || c == '\t' || c == '\n' || strings.HasPrefix(line[i:], "\\\n"):
+			case c == ' ' || c == '\t' || c == '\n' || strings.HasPrefix(line[i:], "\\\n") ||
+				separatorAt(line, i) > 0:
 				break word
 			case c == '\'':
 				end := strings.IndexByte(line[i+1:], '\'')
@@ -242,6 +256,18 @@ func scanWords(line string) []hlWord {
 		words = append(words, w)
 	}
 	return words
+}
+
+// separatorAt is the length of the operator between commands at i ("&&",
+// "||", ";"), or 0 (as splitList reads them).
+func separatorAt(line string, i int) int {
+	switch {
+	case line[i] == ';':
+		return 1
+	case (line[i] == '&' || line[i] == '|') && i+1 < len(line) && line[i+1] == line[i]:
+		return 2
+	}
+	return 0
 }
 
 // scanDouble reads the double quote at i into w: its escapes and variables
