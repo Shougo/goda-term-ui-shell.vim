@@ -102,6 +102,21 @@ function! s:shell() abort
   call s:check('shell filetype', &filetype, 'goda-term-shell')
   call s:check('shell prompt', getline(1, '$'), ['| user', '% '])
   call s:check('shell variables', [b:goda_term_name, t:goda_term_ui_shell_last_name], ['sh', 'sh'])
+  " The prompt deleted comes back highlighted, as by an undo.
+  call s:check('prompt highlight', s:highlights(line('$')), [[1, 1, 'Identifier', 1]])
+  call setline('$', 'x')
+  call cursor('$', 1)
+  call goda_term#ui#shell#_check_prompt()
+  stopinsert
+  call s:check('prompt back', [getline('$'), s:highlights(line('$'))],
+        \ ['% ', [[1, 1, 'Identifier', 1]]])
+  " (Its own undo block.)
+  let &undolevels = &undolevels
+  normal! 0D
+  silent undo
+  doautocmd TextChanged
+  call s:check('prompt undone', [getline('$'), s:highlights(line('$'))],
+        \ ['% ', [[1, 1, 'Identifier', 1]]])
 
   if has('win32')
     " A command in ConPTY, and its output.

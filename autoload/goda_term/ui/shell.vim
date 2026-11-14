@@ -54,6 +54,8 @@ function! goda_term#ui#shell#_new(name, params) abort
           \ call goda_term#ui#shell#_check_prompt()
     autocmd TextChanged,TextChangedI,TextChangedP <buffer>
           \ call s:notify_command_line(bufnr('%'))
+    " (An undo brings the prompt back, not its highlight.)
+    autocmd TextChanged <buffer> call s:highlight_prompt(bufnr('%'))
   augroup END
   setlocal filetype=goda-term-shell
   return bufnr
@@ -73,6 +75,7 @@ endfunction
 function! goda_term#ui#shell#_new_command_line(bufnr, params, command_line) abort
   let prompt = a:params.prompt . ' '
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', prompt)
+  call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_highlight', a:params.promptHighlight)
   let user_prompts = a:params.userPrompt ==# '' ? []
         \ : split(eval(a:params.userPrompt), "\n")
   let lines = getbufline(a:bufnr, 1, '$')
@@ -107,8 +110,7 @@ function! goda_term#ui#shell#_new_command_line(bufnr, params, command_line) abor
     call s:highlight(a:params.userPromptHighlight, 'userPrompt', 1, a:bufnr, row, 1, 0)
     let row -= 1
   endfor
-  call s:highlight(a:params.promptHighlight, 'prompt', 1, a:bufnr, lnum, 1,
-        \ len(a:params.prompt))
+  call s:highlight_prompt(a:bufnr)
   call goda_term#ui#shell#_move_cursor_last(a:bufnr)
   " Also when the output of a command ended (no key, no redraw).
   redraw
@@ -273,6 +275,8 @@ function! goda_term#ui#shell#_check_prompt() abort
       return
     endif
     call setline('.', prompt)
+    " (The highlight went with the text.)
+    call s:highlight_prompt(bufnr('%'))
     startinsert!
     return
   endif
@@ -284,6 +288,26 @@ function! goda_term#ui#shell#_check_prompt() abort
   if col('.') <= end
     call cursor(0, end + 1)
   endif
+endfunction
+
+" Highlights the prompt of {bufnr} (promptHighlight), again when it is
+" there: the highlight of the prompt deleted does not come back with it.
+function! s:highlight_prompt(bufnr) abort
+  let lnum = getbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
+  let prompt = getbufvar(a:bufnr, 'goda_term_ui_shell_prompt', '')
+  let group = getbufvar(a:bufnr, 'goda_term_ui_shell_prompt_highlight', '')
+  if lnum <= 0 || len(prompt) <= 1 || group ==# ''
+        \ || stridx(getbufoneline(a:bufnr, lnum), prompt) != 0
+    return
+  endif
+  " (What is left of the previous one.)
+  if has('nvim')
+    call nvim_buf_clear_namespace(a:bufnr, s:namespace, lnum - 1, lnum)
+  elseif !empty(prop_type_get('prompt', #{bufnr: a:bufnr}))
+    call prop_remove(#{type: 'prompt', bufnr: a:bufnr, all: v:true}, lnum)
+  endif
+  " (Without the space after it.)
+  call s:highlight(group, 'prompt', 1, a:bufnr, lnum, 1, len(prompt) - 1)
 endfunction
 
 function! s:highlight(group, name, priority, bufnr, row, col, length) abort
