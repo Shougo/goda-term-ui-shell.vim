@@ -174,10 +174,11 @@ function! goda_term#ui#shell#_input(pattern, prompt) abort
     return end < 0 ? '' : getline('.')[: end]
   endif
   let line = getline('.')
-  let line = line !~# a:pattern && line('.') != line('$') ? ''
+  let input = line !~# a:pattern && line('.') != line('$') ? ''
         \ : s:strip_prompt(line, a:pattern, a:prompt)
-  let end = col('.') - (mode() ==# 'n' ? 2 : 3)
-  return end < 0 ? '' : line[: end]
+  " The cursor column is of the line, which has the prompt.
+  let end = col('.') - (mode() ==# 'n' ? 1 : 2) - (len(line) - len(input))
+  return end < 0 ? '' : input[: end]
 endfunction
 
 " The command line goes on in a new line (a quote not closed, a backslash

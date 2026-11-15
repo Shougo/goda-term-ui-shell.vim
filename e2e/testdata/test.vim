@@ -161,6 +161,12 @@ function! s:shell() abort
     call s:check('setCommandLine', getline('$'), '% echo again')
     call cursor('$', 1)
     call s:check('get_input', goda_term#ui#get_input(), '')
+    " Before the cursor, in the middle of the line: the prompt is not
+    " counted.
+    call cursor('$', len('% echo a'))
+    call s:check('get_input normal', goda_term#ui#get_input(), 'echo a')
+    call feedkeys("a\<Cmd>let g:input = goda_term#ui#get_input()\<CR>\<Esc>", 'xt')
+    call s:check('get_input insert', g:input, 'echo a')
     call goda_term#ui#do_action('executeLine')
     call s:wait('index(getline(1, "$"), "again") >= 0 && getline("$") ==# "% "')
     call goda_term#ui#do_action('setCommandLine', #{str: 'pushed'})
