@@ -118,8 +118,9 @@ endfunction
 
 function! goda_term#ui#shell#_move_cursor_last(bufnr) abort
   let winid = get(win_findbuf(a:bufnr), 0, -1)
+  " Not shown: the cursor of another buffer (maybe in Insert mode) is not
+  " its.
   if winid < 0
-    stopinsert
     return
   endif
   call win_execute(winid, 'call cursor(line("$"), col([line("$"), "$"]) + 1)')

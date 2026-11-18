@@ -275,10 +275,27 @@ function! s:shell() abort
     call goda_term#ui#do_action('setCommandLine', #{str: ''})
   endif
 
+  " Output while another buffer is in Insert mode, the shell hidden: Insert
+  " mode goes on there.
+  if !has('win32')
+    call goda_term#ui#do_action('send', #{str: 'sleep 0.3; echo late'})
+    enew
+    call feedkeys("i\<Cmd>call s:wait_late()\<CR>\<Cmd>let g:mode = mode()\<CR>\<Esc>", 'xt')
+    call s:check('Insert mode in another buffer', g:mode, 'i')
+    bwipeout!
+    execute 'buffer' s:buf
+  endif
+
   " Shown again: the same buffer.
   wincmd n
   call goda_term#start(#{name: 'sh', ui: 'shell'})
   call s:check('shell again', bufnr('%'), s:buf)
+endfunction
+
+" Wait for "late" and the next prompt in the shell buffer.
+function! s:wait_late() abort
+  call s:wait('index(getbufline(s:buf, 1, "$"), "late") >= 0'
+        \ . ' && getbufoneline(s:buf, "$") ==# "% "', s:buf)
 endfunction
 
 " The highlights of the line {lnum}: [[col, length, group]].
