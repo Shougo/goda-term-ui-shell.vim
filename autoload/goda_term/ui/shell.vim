@@ -204,9 +204,21 @@ function! goda_term#ui#shell#_flush(bufnr, lnum, lines, highlights) abort
     call prop_clear(a:lnum, min([end, getbufinfo(a:bufnr)[0].linecount]), #{bufnr: a:bufnr})
   endif
   call setbufline(a:bufnr, a:lnum, a:lines)
-  for [row, col, length, group, name, priority] in a:highlights
-    call s:highlight(group, name, priority, a:bufnr, a:lnum + row, col, length)
-  endfor
+  if !empty(a:highlights)
+    " (As s:highlight() for each, in Lua or Vim9 script: thousands in the
+    " colored output of a command.)
+    let missing = has('nvim')
+          \ ? luaeval("require('goda_term.ui.shell.highlight').add("
+          \          .. "_A[1],_A[2],_A[3],_A[4],_A[5])",
+          \          [a:bufnr, s:namespace, a:lnum, a:lines, a:highlights])
+          \ : goda_term#ui#shell#highlight#Add(
+          \          a:bufnr, a:lnum, a:lines, a:highlights)
+    for group in missing
+      echohl ErrorMsg
+      echomsg printf('goda-term: highlight "%s" does not exist', group)
+      echohl None
+    endfor
+  endif
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt', getbufoneline(a:bufnr, '$'))
   call setbufvar(a:bufnr, 'goda_term_ui_shell_prompt_lnum', 0)
   call setbufvar(a:bufnr, '&modified', 0)

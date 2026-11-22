@@ -138,6 +138,29 @@ function! s:shell() abort
     call s:check('colors', sort(s:highlights(lnum), {a, b -> a[0] != b[0] ? a[0] - b[0] : a[2] ># b[2] ? 1 : -1}),
           \ [[1, 3, 'TestRed', 30], [5, 4, 'TestBold', 10], [10, 4, 'TestBold', 10], [10, 4, 'TestRed', 30]])
 
+    " goda_term#ui#shell#_flush() itself: a length of 0 or past the end goes
+    " to the end, a column past the end is skipped, a missing group is told
+    " once.
+    let shell = bufnr('%')
+    new
+    let before = len(split(execute('messages'), "\n"))
+    call goda_term#ui#shell#_flush(bufnr('%'), 1, ['abcdef', 'xy'], [
+          \ [0, 2, 0, 'TestRed', 'test_red', 30],
+          \ [1, 1, 10, 'TestBold', 'test_bold', 10],
+          \ [1, 5, 1, 'TestRed', 'test_red', 30],
+          \ [0, 1, 1, 'NoSuchGroup', 'test_none', 10],
+          \ [1, 1, 1, 'NoSuchGroup', 'test_none', 10],
+          \ [1, 2, 1, 'TestRed', 'test_red', 30],
+          \ ])
+    call s:check('flush highlights', [s:highlights(1), sort(s:highlights(2))],
+          \ [[[2, 5, 'TestRed', 30]], [[1, 2, 'TestBold', 10], [2, 1, 'TestRed', 30]]])
+    call s:check('flush missing group',
+          \ split(execute('messages'), "\n")[before :]
+          \ ->filter({ _, m -> m =~# 'NoSuchGroup' }),
+          \ ['goda-term: highlight "NoSuchGroup" does not exist'])
+    bwipeout!
+    execute 'buffer' shell
+
     " An alias, an error, and one that is not there.
     call goda_term#ui#do_action('send', #{str: 'greet'})
     call s:wait('index(getline(1, "$"), "aliased") >= 0 && getline("$") ==# "% "')
