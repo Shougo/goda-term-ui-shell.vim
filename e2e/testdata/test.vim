@@ -89,15 +89,16 @@ function! s:shell() abort
   call mkdir(dir, 'p')
   highlight TestRed ctermfg=1 guifg=Red
   highlight TestBold cterm=bold gui=bold ctermfg=2 guifg=Green
-  call goda_term#custom#patch_local('sh', #{uiParams: #{shell: #{
+  " The options of the UI, given to every start of "sh".
+  let s:sh = #{uiParams: #{shell: #{
         \ shellHistoryPath: history,
         \ aliases: #{greet: 'echo aliased'},
         \ ansiColorHighlights: #{fgs: repeat(['TestRed'], 16), bold: 'TestBold'},
         \ userPrompt: '"| user"',
         \ noSaveHistoryCommands: ['history'],
-        \ }}})
+        \ }}}
   enew
-  call goda_term#start(#{name: 'sh', ui: 'shell'})
+  call goda_term#start(extend(#{name: 'sh', ui: 'shell'}, s:sh))
   let s:buf = bufnr('%')
   call s:check('shell filetype', &filetype, 'goda-term-shell')
   call s:check('shell prompt', getline(1, '$'), ['| user', '% '])
@@ -311,7 +312,7 @@ function! s:shell() abort
 
   " Shown again: the same buffer.
   wincmd n
-  call goda_term#start(#{name: 'sh', ui: 'shell'})
+  call goda_term#start(extend(#{name: 'sh', ui: 'shell'}, s:sh))
   call s:check('shell again', bufnr('%'), s:buf)
 endfunction
 

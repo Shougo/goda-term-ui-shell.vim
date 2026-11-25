@@ -4,5 +4,5 @@ go 1.26.0
 
 require (
 	github.com/Shougo/goda-term.vim v0.2.0
-	github.com/Shougo/goda.vim v0.10.1
+	github.com/Shougo/goda.vim v0.13.0
 )
