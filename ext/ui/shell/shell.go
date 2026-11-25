@@ -85,7 +85,7 @@ func DefaultParams() Params {
 		ExprParams:            []string{"winCol", "winRow", "winHeight", "winWidth"},
 		FloatingBorder:        "",
 		FlushIntervalMs:       100,
-		PasswordPattern:       `(Enter |Repeat |[Oo]ld |[Nn]ew |login |Kerberos |EncFS |CVS |UNIX | SMB |LDAP |\[sudo( \w*)?\] )([Pp]assword|[Pp]assphrase)`,
+		PasswordPattern:       `(Enter |Repeat |[Oo]ld |[Nn]ew |login |Kerberos |EncFS |CVS |UNIX | SMB |LDAP |\[sudo[^\]]*\] )([Pp]assword|[Pp]assphrase)`,
 		Prompt:                "%",
 		PromptHighlight:       "Identifier",
 		PromptPattern:         "% ",
