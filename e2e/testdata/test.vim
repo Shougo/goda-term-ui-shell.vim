@@ -92,7 +92,7 @@ function! s:shell() abort
   " The options of the UI, given to every start of "sh".
   let s:sh = #{uiParams: #{shell: #{
         \ shellHistoryPath: history,
-        \ aliases: #{greet: 'echo aliased'},
+        \ aliases: #{greet: 'echo aliased', shout: 'tr a-z A-Z | cut -c'},
         \ ansiColorHighlights: #{fgs: repeat(['TestRed'], 16), bold: 'TestBold'},
         \ userPrompt: '"| user"',
         \ noSaveHistoryCommands: ['history'],
@@ -123,6 +123,10 @@ function! s:shell() abort
     " A command in ConPTY, and its output.
     call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello'})
     call s:wait('index(getline(1, "$"), "hello") >= 0 && getline("$") ==# "% "')
+    " No pipes on MS-Windows yet: an error.
+    call s:errmsgs()
+    call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello | sort'})
+    call s:check('pipe on MS-Windows', s:errmsgs() =~# 'pipes are not supported', v:true)
     " No redirections on MS-Windows yet: an error, and no file.
     call s:errmsgs()
     let file = tempname()
@@ -198,10 +202,27 @@ function! s:shell() abort
     call goda_term#ui#do_action('send', #{str: "sh -c 'echo to-err >&2' 2>> redirect.txt"})
     call s:wait('getline("$") ==# "% " && readfile(' . string(file) . ') ==# ["to-file", "to-err"]')
     call s:check('redirect error', index(getline(1, '$'), 'to-err'), -1)
-    " Pipes are read, not run yet.
+    " Pipes: the output of one, the input of the next; the error of each to
+    " the buffer.
+    call goda_term#ui#do_action('send', #{str: "printf 'b\\na\\n' | sort | tr a-z A-Z"})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "B") >= 0')
+    let lnum = index(getline(1, '$'), 'A') + 1
+    call s:check('pipe', getline(lnum, lnum + 1), ['A', 'B'])
+    call goda_term#ui#do_action('send', #{str: "sh -c 'echo pipe-err >&2' | cat > redirect.txt"})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "pipe-err") >= 0')
+    call s:check('pipe error', readfile(file), [])
+    " An alias in a pipe, and an alias that is a pipe (the words to its
+    " last command).
+    call goda_term#ui#do_action('send', #{str: 'greet | shout 1-7'})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "ALIASED") >= 0')
+    call goda_term#ui#do_action('send', #{str: 'echo xyz | shout 3'})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "Z") >= 0')
+    " No builtin in a pipe.
     call s:errmsgs()
-    call goda_term#ui#do_action('send', #{str: 'echo a | cat'})
-    call s:check('pipe', s:errmsgs() =~# 'pipes are not supported', v:true)
+    call goda_term#ui#do_action('send', #{str: 'history | cat'})
+    call s:check('pipe builtin', s:errmsgs() =~# 'history cannot be in a pipe', v:true)
+    call goda_term#ui#do_action('send', #{str: 'echo a | > redirect.txt'})
+    call s:check('pipe without a command', s:errmsgs() =~# 'a command is missing in a pipe', v:true)
 
     " The command line: set, executed, put aside.
     call goda_term#ui#do_action('setCommandLine', #{str: 'echo again'})

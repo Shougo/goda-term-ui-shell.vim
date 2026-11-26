@@ -9,11 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
 
-// Pty is a command running in a pseudo terminal.
+// Pty is a command running in a pseudo terminal, or the commands of a
+// pipeline.
 type Pty struct {
-	proc *os.Process
+	// proc is the command (the last of a pipeline), procs all of them.
+	proc  *os.Process
+	procs []*os.Process
+	// reaped: those waited for (Unix), as procs.
+	reaped []atomic.Bool
 	// wait waits for the command: its exit code (-1: killed).
 	wait func() (int, error)
 	// r is what the command writes (stdout and stderr), w its input.
@@ -46,10 +52,36 @@ type Options struct {
 // ErrRedirect: Options with files where not CanRedirect.
 var ErrRedirect = errors.New("redirections are not supported on this system yet")
 
+// ErrPipe: a pipeline of several commands where not CanPipe.
+var ErrPipe = errors.New("pipes are not supported on this system yet")
+
+// Stage is a command of a pipeline.
+type Stage struct {
+	// Path is the executable, with its directory.
+	Path string
+	Args []string
+	// Env is the whole environment ("NAME=value").
+	Env []string
+	// Stdin, Stdout and Stderr are files instead of the pipe or the
+	// terminal (nil), where CanRedirect.  StartPipeline does not close them.
+	Stdin, Stdout, Stderr *os.File
+}
+
 func (o Options) redirected() bool { return o.Stdin != nil || o.Stdout != nil || o.Stderr != nil }
 
 // Start runs path (an executable, with its directory) with o.
 func Start(path string, o Options) (*Pty, error) {
+	return StartPipeline([]Stage{{path, o.Args, o.Env, o.Stdin, o.Stdout, o.Stderr}}, o)
+}
+
+// StartPipeline runs stages in the terminal, each the input of the next
+// (where CanPipe), as a shell runs "a | b": the input of the first and the
+// output of the last are the terminal, the error of each too.  Of o, Dir,
+// Rows and Cols are used.  Its exit code is that of the last.
+func StartPipeline(stages []Stage, o Options) (*Pty, error) {
+	if len(stages) == 0 {
+		return nil, errors.New("pty: no command")
+	}
 	if o.Rows <= 0 {
 		o.Rows = 24
 	}
@@ -57,8 +89,22 @@ func Start(path string, o Options) (*Pty, error) {
 		o.Cols = 80
 	}
 	p := &Pty{done: make(chan struct{})}
-	if err := start(p, path, o); err != nil {
+	var err error
+	switch {
+	case len(stages) > 1 && !CanPipe():
+		return nil, ErrPipe
+	case len(stages) > 1:
+		err = startPipeline(p, stages, o)
+	default:
+		s := stages[0]
+		o.Args, o.Env, o.Stdin, o.Stdout, o.Stderr = s.Args, s.Env, s.Stdin, s.Stdout, s.Stderr
+		err = start(p, s.Path, o)
+	}
+	if err != nil {
 		return nil, err
+	}
+	if p.procs == nil {
+		p.procs = []*os.Process{p.proc}
 	}
 	go func() {
 		p.code, _ = p.wait()
@@ -98,7 +144,9 @@ func (p *Pty) Close() error {
 		select {
 		case <-p.done:
 		default:
-			_ = p.proc.Kill()
+			for _, proc := range p.procs {
+				_ = proc.Kill()
+			}
 		}
 		_ = p.w.Close()
 		_ = p.r.Close()
@@ -106,7 +154,7 @@ func (p *Pty) Close() error {
 	return nil
 }
 
-// Pid is that of the command.
+// Pid is that of the command (the last of a pipeline).
 func (p *Pty) Pid() int { return p.proc.Pid }
 
 func isEOF(err error) bool {

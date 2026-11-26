@@ -93,6 +93,9 @@ func TestIncomplete(t *testing.T) {
 		"echo a":                  false,
 		`echo "a\"`:               true,
 		"git tag -m \"x\n\n- y\"": false,
+		"ls |":                    true,
+		"ls | grep go":            false,
+		"ls '|'":                  false,
 	} {
 		if got := incomplete(in); got != want {
 			t.Errorf("incomplete(%q) = %v, want %v", in, got, want)

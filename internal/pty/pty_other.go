@@ -9,6 +9,11 @@ func start(p *Pty, path string, o Options) error {
 	return startPipes(p, path, o)
 }
 
+// CanPipe: StartPipeline may have several commands (not yet here).
+func CanPipe() bool { return false }
+
+func startPipeline(*Pty, []Stage, Options) error { return ErrPipe }
+
 // CanRedirect: Options may have files (not yet here).
 func CanRedirect() bool { return false }
 

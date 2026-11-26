@@ -12,10 +12,10 @@ import (
 
 // The command line, as ddt-ui-shell parses it: words with quotes and
 // backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~, and
-// globs; and commands one after another with "&&", "||" and ";". Each
-// command is run directly, not by a shell. Its redirections are "<", ">",
-// ">>" with a file, and ">&" with a descriptor, each after a descriptor
-// (0, 1 or 2) or not ("2>err", "2>&1"). A pipe ("|") is read, not run yet.
+// globs; and commands one after another with "&&", "||" and ";", and in
+// pipes ("|"). Each command is run directly, not by a shell. Its
+// redirections are "<", ">", ">>" with a file, and ">&" with a descriptor,
+// each after a descriptor (0, 1 or 2) or not ("2>err", "2>&1").
 
 type quoteKind int
 
@@ -48,7 +48,9 @@ type redirection struct {
 }
 
 var (
-	errPipe = errors.New("pipes are not supported yet")
+	// errPipe: a pipe where one command is wanted.
+	errPipe       = errors.New("a pipe is not one command")
+	errEmptyStage = errors.New("a command is missing in a pipe")
 	// errDescriptor: not 0, 1 or 2.
 	errDescriptor = errors.New("bad file descriptor")
 	errNoFile     = errors.New("a file is missing after")
@@ -113,8 +115,10 @@ func incomplete(input string) bool {
 	if len(items) == 0 {
 		return false
 	}
-	_, trailing, err := scanTokens(items[len(items)-1].line)
-	return trailing || errors.Is(err, errUnclosedQuote)
+	toks, trailing, err := scanTokens(items[len(items)-1].line)
+	// "|" at the end goes on too, as "&&" does.
+	return trailing || errors.Is(err, errUnclosedQuote) ||
+		err == nil && len(toks) > 0 && toks[len(toks)-1].op == "|"
 }
 
 // listItem is a command of a command line, and the operator before it
@@ -378,13 +382,47 @@ type parsed struct {
 	redirs []redirection
 }
 
-// parseCommandLine parses input in the directory cwd; getenv is the
-// environment ($HOME for ~ too).
+// parseCommandLine parses input, one command, in the directory cwd;
+// getenv is the environment ($HOME for ~ too).
 func parseCommandLine(cwd, input string, getenv func(string) (string, bool)) (parsed, error) {
-	toks, err := parseTokens(input)
+	stages, err := parsePipeline(cwd, input, getenv)
 	if err != nil {
 		return parsed{}, err
 	}
+	if len(stages) > 1 {
+		return parsed{}, errPipe
+	}
+	return stages[0], nil
+}
+
+// parsePipeline parses input, its commands separated by "|", as
+// parseCommandLine.
+func parsePipeline(cwd, input string, getenv func(string) (string, bool)) ([]parsed, error) {
+	toks, err := parseTokens(input)
+	if err != nil {
+		return nil, err
+	}
+	var stages []parsed
+	start := 0
+	for i := 0; i <= len(toks); i++ {
+		if i < len(toks) && toks[i].op != "|" {
+			continue
+		}
+		if i == start && (i < len(toks) || start > 0) {
+			return nil, errEmptyStage
+		}
+		c, err := parseCommand(cwd, toks[start:i], getenv)
+		if err != nil {
+			return nil, err
+		}
+		stages = append(stages, c)
+		start = i + 1
+	}
+	return stages, nil
+}
+
+// parseCommand parses the tokens of one command.
+func parseCommand(cwd string, toks []token, getenv func(string) (string, bool)) (parsed, error) {
 	env := map[string]string{}
 	i := 0
 	for ; i < len(toks); i++ {
@@ -434,8 +472,6 @@ func parseCommandLine(cwd, input string, getenv func(string) (string, bool)) (pa
 	for k := 0; k < len(rest); k++ {
 		t := rest[k]
 		switch {
-		case t.op == "|":
-			return parsed{}, errPipe
 		case t.op != "":
 			r := t.redir
 			if r.dup < 0 {

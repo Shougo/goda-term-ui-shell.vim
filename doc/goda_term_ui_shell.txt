@@ -28,8 +28,8 @@ Its 'filetype' is "goda-term-shell".
 
 The command line is not given to a shell: it is words with quotes and
 backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~ and globs,
-and redirections.  A directory alone ("../", "./sub", "/tmp") is "cd" to
-it.
+redirections and pipes.  A directory alone ("../", "./sub", "/tmp") is "cd"
+to it.
 
 The redirections of a command, done left to right as in a shell:
 	< {file}	The input from {file}.
@@ -43,7 +43,18 @@ word (quotes, $VAR, ~; a glob must give one file), and the space before it
 may be left out ("2>err").  "make > log 2>&1" writes both into log; "make
 2>&1 > log" only the output, the error goes to the buffer.  A builtin has
 none.  Not yet on MS-Windows (an error).
-Pipes ("a | b") are not supported yet (an error).
+
+Commands in a pipe ("a | b | c") run together, the output of each the
+input of the next; the error of each goes to the buffer.  Each has its own
+assignments and redirections (one takes the place of the pipe: "a > log |
+b" gives b nothing).  Its exit code is that of the last.  "|" at the end
+of a line goes on in the next one.  An alias may be a pipe: the words after
+it go to its last command.  A builtin cannot be in a pipe.  <C-c>
+("terminate") interrupts all of them.
+Only the first command reading or writing the terminal has it as its
+controlling terminal: a later one cannot open /dev/tty, as a sudo or an ssh
+asking a password ("echo text | sudo tee file").  Not yet on MS-Windows
+(an error).
 
 Its commands run one after another, as in a shell: "a && b" runs b after a
 succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes

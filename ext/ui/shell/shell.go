@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -418,8 +419,8 @@ func (t *instance) execute(ctx context.Context, h sdk.Host, a term.Args, p Param
 	if v, err := h.Call(ctx, "environ"); err == nil {
 		_ = sdk.Decode(v, &environ)
 	}
-	if cl, err := t.parse(cwd, p, items[0].line, environ); err == nil && len(cl.args) > 0 &&
-		!p.noSaveHistory && !slices.Contains(p.NoSaveHistoryCommands, cl.args[0]) {
+	if cls, err := t.parse(cwd, p, items[0].line, environ); err == nil && len(cls[0].args) > 0 &&
+		!p.noSaveHistory && !slices.Contains(p.NoSaveHistoryCommands, cls[0].args[0]) {
 		t.appendHistory(ctx, h, p, commandLine)
 	}
 	if len(items) == 1 {
@@ -476,23 +477,39 @@ func (t *instance) next(code int) (string, bool) {
 	return "", false
 }
 
-// parse is the command line line, its alias expanded.
-func (t *instance) parse(cwd string, p Params, line string, environ map[string]string) (parsed, error) {
+// parse is the command line line: its commands (several in a pipe), their
+// aliases expanded.
+func (t *instance) parse(cwd string, p Params, line string, environ map[string]string) ([]parsed, error) {
 	getenv := func(k string) (string, bool) {
 		v, ok := environ[k]
 		return v, ok
 	}
-	cl, err := parseCommandLine(cwd, line, getenv)
-	if err == nil && len(cl.args) > 0 {
-		if alias, ok := p.Aliases[cl.args[0]]; ok {
-			var c parsed
-			c, err = parseCommandLine(cwd, strings.TrimSpace(alias+" "+strings.Join(cl.args[1:], " ")), getenv)
-			cl.args = c.args
-			// Those of the alias first.
-			cl.redirs = append(c.redirs, cl.redirs...)
-		}
+	stages, err := parsePipeline(cwd, line, getenv)
+	if err != nil {
+		return nil, err
 	}
-	return cl, err
+	var out []parsed
+	for _, cl := range stages {
+		alias, ok := "", false
+		if len(cl.args) > 0 {
+			alias, ok = p.Aliases[cl.args[0]]
+		}
+		if !ok {
+			out = append(out, cl)
+			continue
+		}
+		// An alias may be a pipe: the assignments go to its first command,
+		// the words and the redirections (after its own) to its last.
+		as, err := parsePipeline(cwd, strings.TrimSpace(alias+" "+strings.Join(cl.args[1:], " ")), getenv)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(as[0].env, cl.env)
+		last := &as[len(as)-1]
+		last.redirs = append(last.redirs, cl.redirs...)
+		out = append(out, as...)
+	}
+	return out, nil
 }
 
 // run runs the command line line, one command: whether it was started (it
@@ -508,13 +525,14 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 		}
 		return false, code, t.newCommandLine(ctx, h, p, "")
 	}
-	cl, err := t.parse(cwd, p, line, environ)
-	if err != nil || len(cl.args) == 0 {
+	stages, err := t.parse(cwd, p, line, environ)
+	if err != nil || len(stages[0].args) == 0 {
 		if err != nil {
 			printError(ctx, h, err.Error())
 		}
 		return done(1)
 	}
+	cl := stages[0]
 	cmd, args := cl.args[0], cl.args[1:]
 	switch {
 	case cmd == "time":
@@ -532,6 +550,22 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 	case len(cl.redirs) > 0 && (cmd == "cd" || t.builtins()[cmd] != nil):
 		printError(ctx, h, "the redirections of "+cmd+" are not supported")
 		return done(1)
+	case len(stages) > 1:
+		for _, c := range stages {
+			if len(c.args) == 0 {
+				// Assignments or redirections alone.
+				printError(ctx, h, errEmptyStage.Error())
+				return done(1)
+			}
+			if name := c.args[0]; name == "cd" || name == "time" || t.builtins()[name] != nil {
+				printError(ctx, h, name+" cannot be in a pipe")
+				return done(1)
+			}
+		}
+		if !pty.CanPipe() {
+			printError(ctx, h, pty.ErrPipe.Error())
+			return done(1)
+		}
 	case cmd == "cd" && inList:
 		dir := ""
 		if len(args) > 0 {
@@ -554,52 +588,45 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 		}
 		return false, 0, t.cd(ctx, h, p, dir)
 	}
-	v, err := h.Call(ctx, "exepath", cmd)
-	if err != nil {
-		return false, 0, err
-	}
-	path, _ := v.(string)
-	if path == "" {
-		printError(ctx, h, cmd+" is not an executable file.")
-		return done(127)
-	}
-	if len(cl.redirs) > 0 && !pty.CanRedirect() {
-		printError(ctx, h, pty.ErrRedirect.Error())
-		return done(1)
-	}
-	files, closeFiles, err := openRedirections(cl.redirs)
-	if err != nil {
-		printError(ctx, h, err.Error())
-		return done(1)
-	}
-	// The command has them now (or did not start).
-	defer closeFiles()
-	maps := map[string]string{"GIT_PAGER": "cat", "MANPAGER": "cat", "PAGER": "cat", "TERM": "xterm"}
-	env := make([]string, 0, len(environ)+len(cl.env)+len(maps))
-	for k, v := range environ {
-		if _, ok := cl.env[k]; !ok && maps[k] == "" {
-			env = append(env, k+"="+v)
+	// All the commands found, before a file of a redirection is made.
+	paths := make([]string, len(stages))
+	for i, c := range stages {
+		v, err := h.Call(ctx, "exepath", c.args[0])
+		if err != nil {
+			return false, 0, err
+		}
+		paths[i], _ = v.(string)
+		if paths[i] == "" {
+			printError(ctx, h, c.args[0]+" is not an executable file.")
+			return done(127)
+		}
+		if len(c.redirs) > 0 && !pty.CanRedirect() {
+			printError(ctx, h, pty.ErrRedirect.Error())
+			return done(1)
 		}
 	}
-	for k, v := range cl.env {
-		if maps[k] == "" {
-			env = append(env, k+"="+v)
+	ps := make([]pty.Stage, len(stages))
+	for i, c := range stages {
+		files, closeFiles, err := openRedirections(c.redirs)
+		if err != nil {
+			printError(ctx, h, err.Error())
+			return done(1)
 		}
-	}
-	for k, v := range maps {
-		env = append(env, k+"="+v)
+		// The command has them now (or did not start).
+		defer closeFiles()
+		ps[i] = pty.Stage{Path: paths[i], Args: c.args[1:], Env: commandEnv(environ, c.env),
+			Stdin: files[0], Stdout: files[1], Stderr: files[2]}
 	}
 	cols := 80
 	if v, err := h.Call(ctx, "goda_term#ui#shell#_width", bufnr); err == nil && toInt(v) > 0 {
 		cols = toInt(v)
 	}
-	j, err := pty.Start(path, pty.Options{Args: args, Env: env, Dir: cwd, Cols: cols,
-		Stdin: files[0], Stdout: files[1], Stderr: files[2]})
+	j, err := pty.StartPipeline(ps, pty.Options{Dir: cwd, Cols: cols})
 	if err != nil {
 		printError(ctx, h, err.Error())
 		return done(127)
 	}
-	v, err = h.Call(ctx, "getbufinfo", bufnr)
+	v, err := h.Call(ctx, "getbufinfo", bufnr)
 	if err != nil {
 		j.Close()
 		return false, 0, err
@@ -1013,4 +1040,25 @@ func (t *instance) Actions() map[string]term.Action {
 			return t.newCommandLine(ctx, h, p, "")
 		}),
 	}
+}
+
+// commandEnv is the environment of a command: environ, its assignments,
+// and no pager (the buffer is no terminal for one).
+func commandEnv(environ, assigned map[string]string) []string {
+	fixed := map[string]string{"GIT_PAGER": "cat", "MANPAGER": "cat", "PAGER": "cat", "TERM": "xterm"}
+	env := make([]string, 0, len(environ)+len(assigned)+len(fixed))
+	for k, v := range environ {
+		if _, ok := assigned[k]; !ok && fixed[k] == "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	for k, v := range assigned {
+		if fixed[k] == "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	for k, v := range fixed {
+		env = append(env, k+"="+v)
+	}
+	return env
 }

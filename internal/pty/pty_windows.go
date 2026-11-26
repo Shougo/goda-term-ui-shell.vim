@@ -181,6 +181,11 @@ func envBlock(env []string) []uint16 {
 
 // closeTTY: the command is gone, and so is its pseudo console (whose
 // output then ends).
+// CanPipe: StartPipeline may have several commands (not yet here).
+func CanPipe() bool { return false }
+
+func startPipeline(*Pty, []Stage, Options) error { return ErrPipe }
+
 // CanRedirect: Options may have files (not yet here).
 func CanRedirect() bool { return false }
 

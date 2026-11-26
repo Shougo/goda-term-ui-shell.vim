@@ -65,6 +65,7 @@ func TestParseRedirectionErrors(t *testing.T) {
 		in   string
 		want error
 	}{
+		// parseCommandLine is one command.
 		{"ls | grep go", errPipe},
 		{"ls |grep go", errPipe},
 		{"echo >", errNoFile},
@@ -78,5 +79,29 @@ func TestParseRedirectionErrors(t *testing.T) {
 		if _, err := parseCommandLine(cwd, tc.in, getenv); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", tc.in, err, tc.want)
 		}
+	}
+}
+
+func TestParsePipeline(t *testing.T) {
+	cwd := t.TempDir()
+	getenv := func(string) (string, bool) { return "", false }
+	in := func(name string) string { return filepath.Join(cwd, name) }
+	stages, err := parsePipeline(cwd, "A=1 make 2>&1 | B=2 tee log|grep -v x > out", getenv)
+	want := []parsed{
+		{env: map[string]string{"A": "1"}, args: []string{"make"}, redirs: []redirection{{fd: 2, dup: 1, op: ">"}}},
+		{env: map[string]string{"B": "2"}, args: []string{"tee", "log"}},
+		{env: map[string]string{}, args: []string{"grep", "-v", "x"},
+			redirs: []redirection{{fd: 1, dup: -1, op: ">", path: in("out")}}},
+	}
+	if err != nil || !reflect.DeepEqual(stages, want) {
+		t.Errorf("got  %+v %v\nwant %+v", stages, err, want)
+	}
+	for _, s := range []string{"| ls", "ls |", "ls | | cat", "ls || cat"} {
+		if _, err := parsePipeline(cwd, s, getenv); err == nil {
+			t.Errorf("%q: no error", s)
+		}
+	}
+	if _, err := parsePipeline(cwd, "ls | | cat", getenv); !errors.Is(err, errEmptyStage) {
+		t.Errorf("an empty command: %v", err)
 	}
 }
