@@ -4,6 +4,7 @@ package pty
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -87,6 +88,13 @@ func startPipeline(p *Pty, stages []Stage, o Options) error {
 			cmd.SysProcAttr.Setctty, cmd.SysProcAttr.Ctty = true, ctty
 		}
 		if err := cmd.Start(); err != nil {
+			// Which one, and the terminal: a failure seen only now and
+			// then (EBADF on macOS) is to be told from the others.
+			role := "no controlling terminal"
+			if i == owner {
+				role = fmt.Sprintf("controlling terminal: its fd %d", ctty)
+			}
+			err = fmt.Errorf("pty: command %d of %d (%s; terminal %s): %w", i+1, n, role, slave.Name(), err)
 			for _, c := range cmds[:i] {
 				_ = syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
 				_ = c.Wait()
