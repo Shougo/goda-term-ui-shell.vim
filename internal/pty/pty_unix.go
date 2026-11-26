@@ -22,9 +22,12 @@ func CanPipe() bool { return true }
 
 // startPipeline starts the stages, each in a session of its own: a signal
 // to the group of each reaches it.  Only one of them can have the terminal
-// as its controlling terminal: the first with the terminal as its 0, 1 or
-// 2 (or the first, as its 3, when none has it).  The others cannot open
-// /dev/tty (a sudo there cannot ask its password), and do not get SIGWINCH.
+// as its controlling terminal: the last with the terminal as its 0, 1 or 2
+// (or the last, as its 3, when none has it).  It must outlive the others:
+// on macOS the terminal is revoked when it exits, and the others could not
+// write to it any longer; the last waits for the end of the input of the
+// others.  The others cannot open /dev/tty (a sudo there cannot ask its
+// password), and do not get SIGWINCH.
 func startPipeline(p *Pty, stages []Stage, o Options) error {
 	master, slave, err := open()
 	if err != nil {
@@ -64,8 +67,8 @@ func startPipeline(p *Pty, stages []Stage, o Options) error {
 	}
 	// The controlling terminal: through a descriptor of the terminal in its
 	// command.
-	owner, ctty := 0, 3
-	for i := range files {
+	owner, ctty := n-1, 3
+	for i := n - 1; i >= 0; i-- {
 		if k := slices.Index(files[i][:], slave); k >= 0 {
 			owner, ctty = i, k
 			break

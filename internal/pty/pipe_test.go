@@ -72,12 +72,18 @@ func TestPipeline(t *testing.T) {
 	if b, _ := os.ReadFile(file); string(b) != "to-file\n" {
 		t.Errorf("file %q", b)
 	}
-	// The first has the terminal as its controlling terminal; the others
+	// The last has the terminal as its controlling terminal; the others
 	// cannot open /dev/tty.
-	out, _ := run(stage("echo first >/dev/tty"),
-		stage("cat >/dev/null; (echo second >/dev/tty) 2>/dev/null || echo no-tty >&2"))
-	if !strings.Contains(out, "first") || !strings.Contains(out, "no-tty") {
+	out, _ := run(stage("(echo first >/dev/tty) 2>/dev/null || echo first-no-tty >&2"),
+		stage("cat >/dev/null; echo last >/dev/tty"))
+	if !strings.Contains(out, "first-no-tty") || !strings.Contains(out, "last") {
 		t.Errorf("controlling terminal: %q", out)
+	}
+	// The terminal outlives a first command done at once (macOS revokes it
+	// when the one having it as its controlling terminal exits).
+	if out, code := run(stage("true"), stage("sleep 0.2; echo late; echo late-err >&2")); code != 0 ||
+		!strings.Contains(out, "late") || !strings.Contains(out, "late-err") {
+		t.Errorf("after the first: %q, %d", out, code)
 	}
 }
 

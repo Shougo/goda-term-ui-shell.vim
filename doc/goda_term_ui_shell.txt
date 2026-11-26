@@ -51,10 +51,10 @@ b" gives b nothing).  Its exit code is that of the last.  "|" at the end
 of a line goes on in the next one.  An alias may be a pipe: the words after
 it go to its last command.  A builtin cannot be in a pipe.  <C-c>
 ("terminate") interrupts all of them.
-Only the first command reading or writing the terminal has it as its
-controlling terminal: a later one cannot open /dev/tty, as a sudo or an ssh
-asking a password ("echo text | sudo tee file").  Not yet on MS-Windows
-(an error).
+Only the last command reading or writing the terminal has it as its
+controlling terminal: an earlier one cannot open /dev/tty, as a sudo or an
+ssh asking a password ("sudo dmesg | grep usb"; "echo text | sudo tee file"
+can).  Not yet on MS-Windows (an error).
 
 Its commands run one after another, as in a shell: "a && b" runs b after a
 succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes
