@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -94,37 +96,82 @@ func TestConPTYPipeline(t *testing.T) {
 	}
 }
 
-// CTRL-C reaches every command of a pipeline.
-func TestConPTYPipelineInterrupt(t *testing.T) {
+// CTRL-C ends a command, alone or in a pipeline.  When it does not, the
+// commands still running and the output are told.
+func TestConPTYInterrupt(t *testing.T) {
 	if !hasConPTY() {
 		t.Skip("no pseudo console")
 	}
 	cmd := cmdExe(t)
-	stage := func(script string) Stage {
+	system32 := filepath.Join(os.Getenv("SystemRoot"), "System32")
+	viaCmd := func(script string) Stage {
 		return Stage{Path: cmd, Args: []string{"/c", script}, Env: os.Environ()}
 	}
-	p, err := StartPipeline([]Stage{stage("ping -n 30 127.0.0.1"), stage("more")}, Options{})
-	if err != nil {
-		t.Fatal(err)
+	exe := func(name string, args ...string) Stage {
+		return Stage{Path: filepath.Join(system32, name), Args: args, Env: os.Environ()}
 	}
-	defer p.Close()
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			if _, err := p.Read(buf); err != nil {
-				return
+	ping := exe("PING.EXE", "-n", "30", "127.0.0.1")
+	for _, tc := range []struct {
+		name   string
+		stages []Stage
+	}{
+		{"ping", []Stage{ping}},
+		{"cmd ping", []Stage{viaCmd("ping -n 30 127.0.0.1")}},
+		{"ping | findstr", []Stage{ping, exe("findstr.exe", "x")}},
+		{"cmd ping | cmd more", []Stage{viaCmd("ping -n 30 127.0.0.1"), viaCmd("more")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := StartPipeline(tc.stages, Options{})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}()
-	time.Sleep(time.Second)
-	if err := p.Interrupt(); err != nil {
-		t.Fatal(err)
+			defer p.Close()
+			var mu sync.Mutex
+			var out strings.Builder
+			go func() {
+				buf := make([]byte, 1024)
+				for {
+					n, err := p.Read(buf)
+					mu.Lock()
+					out.Write(buf[:n])
+					mu.Unlock()
+					if err != nil {
+						return
+					}
+				}
+			}()
+			time.Sleep(time.Second)
+			if err := p.Interrupt(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan int, 1)
+			go func() { done <- p.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				var running []int
+				for i, proc := range p.procs {
+					if alive(proc.Pid) {
+						running = append(running, i)
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				t.Errorf("not ended: the commands %v still run; the output %q", running, out.String())
+			}
+		})
 	}
-	done := make(chan int, 1)
-	go func() { done <- p.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Error("not ended")
+}
+
+// alive: the process pid has not exited.
+func alive(pid int) bool {
+	const queryLimitedInformation = 0x1000
+	const stillActive = 259
+	h, err := syscall.OpenProcess(queryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return false
 	}
+	defer syscall.CloseHandle(h)
+	var code uint32
+	return syscall.GetExitCodeProcess(h, &code) == nil && code == stillActive
 }
