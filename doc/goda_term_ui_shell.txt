@@ -27,9 +27,23 @@ with its ANSI colors, is written in the buffer.
 Its 'filetype' is "goda-term-shell".
 
 The command line is not given to a shell: it is words with quotes and
-backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~ and globs;
-no pipes, no redirections.  A directory alone ("../", "./sub", "/tmp") is
-"cd" to it.
+backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~ and globs,
+and redirections.  A directory alone ("../", "./sub", "/tmp") is "cd" to
+it.
+
+The redirections of a command, done left to right as in a shell:
+	< {file}	The input from {file}.
+	> {file}	The output to {file} (made empty first).
+	>> {file}	The output added to {file}.
+	2> {file}	The error to {file} (2>> to add to it).
+	2>&1		The error where the output goes (>&2: the output
+			where the error goes).
+A descriptor (0, 1 or 2) may be before "<", ">" or ">>"; the file is a
+word (quotes, $VAR, ~; a glob must give one file), and the space before it
+may be left out ("2>err").  "make > log 2>&1" writes both into log; "make
+2>&1 > log" only the output, the error goes to the buffer.  A builtin has
+none.  Not yet on MS-Windows (an error).
+Pipes ("a | b") are not supported yet (an error).
 
 Its commands run one after another, as in a shell: "a && b" runs b after a
 succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes
@@ -71,7 +85,9 @@ commandLineHighlights	(dict)
 		"command" (an executable of $PATH, or a path to one),
 		"builtin", "alias", "precommand" ("sudo", "env", ... before
 		the command), "directory" (a path to one: "cd" to it),
-		"separator" ("&&", "||", ";" between the commands),
+		"separator" ("&&", "||", ";" between the commands, and "|"),
+		"redirect" (">", "2>&1", ...: the file after it is not a
+		command),
 		"unknown" (none of these), "option", "assignment" (NAME= of
 		NAME=value), "singleQuote", "doubleQuote", "variable",
 		"escape", "glob", "path" (one that exists).  A kind of ""
@@ -82,7 +98,8 @@ commandLineHighlights	(dict)
 		\ directory: 'Directory', doubleQuote: 'String',
 		\ escape: 'SpecialChar', glob: 'Special', option: 'Type',
 		\ path: 'Underlined', precommand: 'Statement',
-		\ separator: 'Operator', singleQuote: 'String',
+		\ redirect: 'Operator', separator: 'Operator',
+		\ singleQuote: 'String',
 		\ unknown: 'Error', variable: 'Identifier'}
 <
 cwd			(string)

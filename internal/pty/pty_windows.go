@@ -56,6 +56,9 @@ func coord(rows, cols int) uintptr {
 }
 
 func start(p *Pty, path string, o Options) error {
+	if o.redirected() {
+		return ErrRedirect
+	}
 	if !hasConPTY() {
 		return startPipes(p, path, o)
 	}
@@ -178,6 +181,9 @@ func envBlock(env []string) []uint16 {
 
 // closeTTY: the command is gone, and so is its pseudo console (whose
 // output then ends).
+// CanRedirect: Options may have files (not yet here).
+func CanRedirect() bool { return false }
+
 func closeTTY(p *Pty) {
 	switch s := p.sys.(type) {
 	case *console:

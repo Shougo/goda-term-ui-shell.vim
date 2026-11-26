@@ -2,7 +2,15 @@
 
 package pty
 
-func start(p *Pty, path string, o Options) error { return startPipes(p, path, o) }
+func start(p *Pty, path string, o Options) error {
+	if o.redirected() {
+		return ErrRedirect
+	}
+	return startPipes(p, path, o)
+}
+
+// CanRedirect: Options may have files (not yet here).
+func CanRedirect() bool { return false }
 
 func closeTTY(p *Pty) { closePipes(p) }
 

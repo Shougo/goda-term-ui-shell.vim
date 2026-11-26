@@ -7,13 +7,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // The command line, as ddt-ui-shell parses it: words with quotes and
 // backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~, and
-// globs; and commands one after another with "&&", "||" and ";". There are
-// no pipes and no redirections (each command is run directly, not by a
-// shell).
+// globs; and commands one after another with "&&", "||" and ";". Each
+// command is run directly, not by a shell. Its redirections are "<", ">",
+// ">>" with a file, and ">&" with a descriptor, each after a descriptor
+// (0, 1 or 2) or not ("2>err", "2>&1"). A pipe ("|") is read, not run yet.
 
 type quoteKind int
 
@@ -31,6 +33,64 @@ type segment struct {
 type token struct {
 	text     string
 	segments []segment
+	// op: an operator, not a word: "|", or the kind of redir ("<", ">",
+	// ">>").
+	op    string
+	redir redirection
+}
+
+// redirection is "[fd]<", "[fd]>", "[fd]>>" with the file path, or
+// "[fd]>&dup" (dup is -1 otherwise).
+type redirection struct {
+	fd, dup int
+	op      string
+	path    string
+}
+
+var (
+	errPipe = errors.New("pipes are not supported yet")
+	// errDescriptor: not 0, 1 or 2.
+	errDescriptor = errors.New("bad file descriptor")
+	errNoFile     = errors.New("a file is missing after")
+	errAmbiguous  = errors.New("ambiguous redirection")
+)
+
+// redirectAt is the redirection at i of s, with the descriptor before it,
+// and its length (0: none). An error has the length read.
+func redirectAt(s string, i int) (redirection, int, error) {
+	r := redirection{fd: -1, dup: -1}
+	j := i
+	if j < len(s) && '0' <= s[j] && s[j] <= '9' {
+		r.fd = int(s[j] - '0')
+		j++
+	}
+	if j >= len(s) || s[j] != '<' && s[j] != '>' {
+		return redirection{}, 0, nil
+	}
+	r.op = s[j : j+1]
+	j++
+	if r.op == ">" && j < len(s) && s[j] == '>' {
+		r.op = ">>"
+		j++
+	}
+	if r.fd < 0 {
+		r.fd = 1
+		if r.op == "<" {
+			r.fd = 0
+		}
+	}
+	if r.fd > 2 {
+		return r, j - i, fmt.Errorf("%w: %d", errDescriptor, r.fd)
+	}
+	if r.op == ">" && j < len(s) && s[j] == '&' {
+		j++
+		if j >= len(s) || s[j] < '0' || s[j] > '2' {
+			return r, j - i, fmt.Errorf("%w after %q", errDescriptor, s[i:j])
+		}
+		r.dup = int(s[j] - '0')
+		j++
+	}
+	return r, j - i, nil
 }
 
 var (
@@ -172,14 +232,39 @@ func scanTokens(input string) (result []token, trailing bool, err error) {
 		for _, s := range segs {
 			text.WriteString(s.text)
 		}
-		result = append(result, token{text.String(), segs})
+		result = append(result, token{text: text.String(), segments: segs})
 		segs, quote, inToken, force = nil, quoteNone, false, false
 		buf.Reset()
 	}
-	for _, c := range input {
+	var size int
+	for i := 0; i < len(input); i += size {
+		var c rune
+		c, size = utf8.DecodeRuneInString(input[i:])
 		switch st {
 		case normal:
 			switch c {
+			case '|':
+				if inToken {
+					push()
+				}
+				result = append(result, token{text: "|", op: "|"})
+			case '<', '>':
+				// A word of one digit just before: the descriptor.
+				start := i
+				if inToken && len(segs) == 0 && !force && quote == quoteNone && buf.Len() == 1 &&
+					'0' <= buf.String()[0] && buf.String()[0] <= '9' {
+					start = i - 1
+					buf.Reset()
+					inToken = false
+				} else if inToken {
+					push()
+				}
+				r, n, err := redirectAt(input, start)
+				if err != nil {
+					return nil, false, err
+				}
+				result = append(result, token{text: input[start : start+n], op: r.op, redir: r})
+				size = start + n - i
 			case '"', '\'':
 				flush()
 				quote, force, inToken = quoteDouble, true, true
@@ -285,10 +370,12 @@ var (
 	plainEscape  = regexp.MustCompile(`\\([ \t\\])`)
 )
 
-// parsed is a command line: its assignments and its words.
+// parsed is a command line: its assignments, its words and its
+// redirections (in their order).
 type parsed struct {
-	env  map[string]string
-	args []string
+	env    map[string]string
+	args   []string
+	redirs []redirection
 }
 
 // parseCommandLine parses input in the directory cwd; getenv is the
@@ -302,11 +389,11 @@ func parseCommandLine(cwd, input string, getenv func(string) (string, bool)) (pa
 	i := 0
 	for ; i < len(toks); i++ {
 		m := assignment.FindStringSubmatch(toks[i].text)
-		if m == nil {
+		if m == nil || toks[i].op != "" {
 			break
 		}
 		key, val := m[1], m[2]
-		if val == "" && i+1 < len(toks) {
+		if val == "" && i+1 < len(toks) && toks[i+1].op == "" {
 			i++
 			val = toks[i].text
 		} else {
@@ -342,10 +429,35 @@ func parseCommandLine(cwd, input string, getenv func(string) (string, bool)) (pa
 		return getenv(name)
 	}
 	var args []string
-	for _, t := range toks[i:] {
-		args = append(args, expandArg(cwd, t, lookup)...)
+	var redirs []redirection
+	rest := toks[i:]
+	for k := 0; k < len(rest); k++ {
+		t := rest[k]
+		switch {
+		case t.op == "|":
+			return parsed{}, errPipe
+		case t.op != "":
+			r := t.redir
+			if r.dup < 0 {
+				if k+1 >= len(rest) || rest[k+1].op != "" {
+					return parsed{}, fmt.Errorf("%w %q", errNoFile, t.text)
+				}
+				k++
+				words := expandArg(cwd, rest[k], lookup)
+				if len(words) != 1 {
+					return parsed{}, fmt.Errorf("%w: %s", errAmbiguous, rest[k].text)
+				}
+				r.path = words[0]
+				if !filepath.IsAbs(r.path) {
+					r.path = filepath.Join(cwd, r.path)
+				}
+			}
+			redirs = append(redirs, r)
+		default:
+			args = append(args, expandArg(cwd, t, lookup)...)
+		}
 	}
-	return parsed{env, args}, nil
+	return parsed{env, args, redirs}, nil
 }
 
 func expandArg(cwd string, t token, lookup func(string) (string, bool)) []string {

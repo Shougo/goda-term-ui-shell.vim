@@ -488,6 +488,8 @@ func (t *instance) parse(cwd string, p Params, line string, environ map[string]s
 			var c parsed
 			c, err = parseCommandLine(cwd, strings.TrimSpace(alias+" "+strings.Join(cl.args[1:], " ")), getenv)
 			cl.args = c.args
+			// Those of the alias first.
+			cl.redirs = append(c.redirs, cl.redirs...)
 		}
 	}
 	return cl, err
@@ -519,7 +521,17 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 		t.mu.Lock()
 		t.startTime = time.Now()
 		t.mu.Unlock()
-		return t.run(ctx, h, a, p, strings.Join(args, " "), environ, inList)
+		// The rest of the line as it is (its quotes and redirections), when
+		// it starts with time.
+		rest := strings.Join(args, " ")
+		if l := strings.TrimLeft(line, " \t"); len(l) > 4 && strings.HasPrefix(l, "time") &&
+			(l[4] == ' ' || l[4] == '\t') {
+			rest = l[5:]
+		}
+		return t.run(ctx, h, a, p, rest, environ, inList)
+	case len(cl.redirs) > 0 && (cmd == "cd" || t.builtins()[cmd] != nil):
+		printError(ctx, h, "the redirections of "+cmd+" are not supported")
+		return done(1)
 	case cmd == "cd" && inList:
 		dir := ""
 		if len(args) > 0 {
@@ -551,6 +563,17 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 		printError(ctx, h, cmd+" is not an executable file.")
 		return done(127)
 	}
+	if len(cl.redirs) > 0 && !pty.CanRedirect() {
+		printError(ctx, h, pty.ErrRedirect.Error())
+		return done(1)
+	}
+	files, closeFiles, err := openRedirections(cl.redirs)
+	if err != nil {
+		printError(ctx, h, err.Error())
+		return done(1)
+	}
+	// The command has them now (or did not start).
+	defer closeFiles()
 	maps := map[string]string{"GIT_PAGER": "cat", "MANPAGER": "cat", "PAGER": "cat", "TERM": "xterm"}
 	env := make([]string, 0, len(environ)+len(cl.env)+len(maps))
 	for k, v := range environ {
@@ -570,7 +593,8 @@ func (t *instance) run(ctx context.Context, h sdk.Host, a term.Args, p Params, l
 	if v, err := h.Call(ctx, "goda_term#ui#shell#_width", bufnr); err == nil && toInt(v) > 0 {
 		cols = toInt(v)
 	}
-	j, err := pty.Start(path, pty.Options{Args: args, Env: env, Dir: cwd, Cols: cols})
+	j, err := pty.Start(path, pty.Options{Args: args, Env: env, Dir: cwd, Cols: cols,
+		Stdin: files[0], Stdout: files[1], Stderr: files[2]})
 	if err != nil {
 		printError(ctx, h, err.Error())
 		return done(127)

@@ -38,7 +38,15 @@ type Options struct {
 	Dir string
 	// Rows and Cols are the size of the terminal (default 24x80).
 	Rows, Cols int
+	// Stdin, Stdout and Stderr are files instead of the terminal (nil: the
+	// terminal), where CanRedirect.  Start does not close them.
+	Stdin, Stdout, Stderr *os.File
 }
+
+// ErrRedirect: Options with files where not CanRedirect.
+var ErrRedirect = errors.New("redirections are not supported on this system yet")
+
+func (o Options) redirected() bool { return o.Stdin != nil || o.Stdout != nil || o.Stderr != nil }
 
 // Start runs path (an executable, with its directory) with o.
 func Start(path string, o Options) (*Pty, error) {

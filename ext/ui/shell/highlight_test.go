@@ -69,8 +69,14 @@ func TestHighlightSpans(t *testing.T) {
 		`$EDITOR file`:          {"file:path", "$EDITOR:variable"},
 		"mycmd file && nocmd -x; cd sub || ll": {"mycmd:command", "file:path", "&&:separator",
 			"nocmd:unknown", "-x:option", ";:separator", "cd:builtin", "sub:path", "||:separator", "ll:alias"},
-		`mycmd "a && b" x\;y 2>&1`: {"mycmd:command", `"a && b":doubleQuote`, `\;:escape`},
-		"time mycmd&&FOO=1 mycmd":  {"time:builtin", "mycmd:command", "&&:separator", "FOO=:assignment", "mycmd:command"},
+		`mycmd "a && b" x\;y 2>&1`: {"mycmd:command", "2>&1:redirect", `"a && b":doubleQuote`, `\;:escape`},
+		// Redirections and their files (not commands), and a pipe.
+		"mycmd > file 2>>nofile < file": {"mycmd:command", ">:redirect", "file:path", "2>>:redirect",
+			"<:redirect", "file:path"},
+		"> file mycmd -x":         {">:redirect", "file:path", "mycmd:command", "-x:option"},
+		"mycmd a2>file":           {"mycmd:command", ">:redirect", "file:path"},
+		"mycmd '>' x | nocmd":     {"mycmd:command", "|:separator", "nocmd:unknown", "'>':singleQuote"},
+		"time mycmd&&FOO=1 mycmd": {"time:builtin", "mycmd:command", "&&:separator", "FOO=:assignment", "mycmd:command"},
 	} {
 		if got := kinds(line, env); !reflect.DeepEqual(got, want) {
 			t.Errorf("%q:\n got %q\nwant %q", line, got, want)

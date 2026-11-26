@@ -123,6 +123,12 @@ function! s:shell() abort
     " A command in ConPTY, and its output.
     call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello'})
     call s:wait('index(getline(1, "$"), "hello") >= 0 && getline("$") ==# "% "')
+    " No redirections on MS-Windows yet: an error, and no file.
+    call s:errmsgs()
+    let file = tempname()
+    call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello > ' . fnamemodify(file, ':gs?\\?/?')})
+    call s:check('redirect on MS-Windows', [s:errmsgs() =~# 'redirections are not supported', filereadable(file)],
+          \ [v:true, v:false])
   else
     call goda_term#ui#do_action('send', #{str: 'echo hello'})
     call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "hello") >= 0')
@@ -179,6 +185,23 @@ function! s:shell() abort
     call s:check('cd', [getcwd(), t:goda_term_ui_last_directory], [dir, dir])
     call goda_term#ui#do_action('send', #{str: 'pwd'})
     call s:wait('index(getline(1, "$"), ' . string(dir) . ') >= 0 && getline("$") ==# "% "')
+
+    " Redirections: the output to a file (not in the buffer), the input
+    " from it, the error added to it.
+    let file = dir . '/redirect.txt'
+    call goda_term#ui#do_action('send', #{str: 'echo to-file > redirect.txt'})
+    call s:wait('getline("$") ==# "% " && filereadable(' . string(file) . ')'
+          \ . ' && readfile(' . string(file) . ') ==# ["to-file"]')
+    call s:check('redirect output', index(getline(1, '$'), 'to-file'), -1)
+    call goda_term#ui#do_action('send', #{str: 'cat < redirect.txt'})
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "to-file") >= 0')
+    call goda_term#ui#do_action('send', #{str: "sh -c 'echo to-err >&2' 2>> redirect.txt"})
+    call s:wait('getline("$") ==# "% " && readfile(' . string(file) . ') ==# ["to-file", "to-err"]')
+    call s:check('redirect error', index(getline(1, '$'), 'to-err'), -1)
+    " Pipes are read, not run yet.
+    call s:errmsgs()
+    call goda_term#ui#do_action('send', #{str: 'echo a | cat'})
+    call s:check('pipe', s:errmsgs() =~# 'pipes are not supported', v:true)
 
     " The command line: set, executed, put aside.
     call goda_term#ui#do_action('setCommandLine', #{str: 'echo again'})

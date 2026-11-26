@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 	"unsafe"
@@ -20,9 +21,22 @@ func start(p *Pty, path string, o Options) error {
 	_ = ioctl(slave.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
 	cmd := exec.Command(path, o.Args...)
 	cmd.Env, cmd.Dir = o.Env, o.Dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	// Its own session, the terminal as its controlling terminal (fd 0).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	files := [3]*os.File{slave, slave, slave}
+	for i, f := range [3]*os.File{o.Stdin, o.Stdout, o.Stderr} {
+		if f != nil {
+			files[i] = f
+		}
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = files[0], files[1], files[2]
+	// Its own session, the terminal as its controlling terminal: a
+	// descriptor of the terminal in the command (3 when none of 0, 1 and 2
+	// is, all being redirected).
+	ctty := slices.Index(files[:], slave)
+	if ctty < 0 {
+		cmd.ExtraFiles = []*os.File{slave}
+		ctty = 3
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: ctty}
 	if err := cmd.Start(); err != nil {
 		master.Close()
 		slave.Close()
@@ -41,6 +55,9 @@ func ioctl(fd, req, arg uintptr) error {
 	}
 	return nil
 }
+
+// CanRedirect: Options may have files.
+func CanRedirect() bool { return true }
 
 func closeTTY(*Pty) {}
 

@@ -29,6 +29,7 @@ func DefaultCommandLineHighlights() map[string]string {
 		"option":      "Type",
 		"path":        "Underlined",
 		"precommand":  "Statement",
+		"redirect":    "Operator",
 		"separator":   "Operator",
 		"singleQuote": "String",
 		"unknown":     "Error",
@@ -52,6 +53,8 @@ type hlWord struct {
 	inner      []hlSpan
 	// separator: an operator between commands.
 	separator bool
+	// redirect: a redirection; file: its file is the next word.
+	redirect, file bool
 }
 
 // precommands run the next word as the command (with their options first).
@@ -74,11 +77,20 @@ func highlightSpans(line string, env hlEnv) []hlSpan {
 	command := true
 	// pre: the precommand before (its options, then the command).
 	pre := ""
-	skip := false
+	skip, file := false, false
 	for _, w := range scanWords(line) {
 		inner = append(inner, w.inner...)
 		raw := line[w.start:w.end]
 		switch {
+		case w.redirect:
+			out = append(out, hlSpan{w.start, w.end, "redirect"})
+			file = w.file
+		case file:
+			// The file of a redirection (not the command).
+			file = false
+			if w.simple && env.exists(w.text) {
+				out = append(out, hlSpan{w.start, w.end, "path"})
+			}
 		case w.separator:
 			// The next word is a command again.
 			out = append(out, hlSpan{w.start, w.end, "separator"})
@@ -205,6 +217,12 @@ func scanWords(line string) []hlWord {
 			i += n
 			continue
 		}
+		if r, n, err := redirectAt(line, i); n > 0 {
+			words = append(words, hlWord{start: i, end: i + n, text: line[i : i+n], redirect: true,
+				file: err == nil && r.dup < 0})
+			i += n
+			continue
+		}
 		w := hlWord{start: i, simple: true}
 		var text strings.Builder
 	word:
@@ -212,7 +230,7 @@ func scanWords(line string) []hlWord {
 			c := line[i]
 			switch {
 			case c == ' ' || c == '\t' || c == '\n' || strings.HasPrefix(line[i:], "\\\n") ||
-				separatorAt(line, i) > 0:
+				c == '<' || c == '>' || separatorAt(line, i) > 0:
 				break word
 			case c == '\'':
 				end := strings.IndexByte(line[i+1:], '\'')
@@ -259,13 +277,15 @@ func scanWords(line string) []hlWord {
 }
 
 // separatorAt is the length of the operator between commands at i ("&&",
-// "||", ";"), or 0 (as splitList reads them).
+// "||", ";", as splitList reads them, and "|"), or 0.
 func separatorAt(line string, i int) int {
 	switch {
 	case line[i] == ';':
 		return 1
 	case (line[i] == '&' || line[i] == '|') && i+1 < len(line) && line[i+1] == line[i]:
 		return 2
+	case line[i] == '|':
+		return 1
 	}
 	return 0
 }
