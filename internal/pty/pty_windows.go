@@ -24,7 +24,12 @@ var (
 	procInitializeProcThreadAttList = kernel32.NewProc("InitializeProcThreadAttributeList")
 	procUpdateProcThreadAttribute   = kernel32.NewProc("UpdateProcThreadAttribute")
 	procDeleteProcThreadAttList     = kernel32.NewProc("DeleteProcThreadAttributeList")
+	procSetConsoleCtrlHandler       = kernel32.NewProc("SetConsoleCtrlHandler")
 )
+
+// ctrlC serializes the processing of CTRL-C of this process around the
+// creation of a command.
+var ctrlC sync.Mutex
 
 const (
 	procThreadAttributePseudoConsole = 0x00020016
@@ -242,8 +247,17 @@ func createInConsole(hpc uintptr, s Stage, dir string, std [3]syscall.Handle) (*
 	}
 	env := envBlock(s.Env)
 	var pi syscall.ProcessInformation
+	// CTRL-C processed by the command: this process may ignore it (as one
+	// started with CREATE_NEW_PROCESS_GROUP, as a job of Vim), and a command
+	// started then ignores it too (CTRL-C in the pseudo console ended
+	// nothing).  This process ignores it again afterwards: CTRL-C in a
+	// console it shares (Vim in a terminal) does not end it.
+	ctrlC.Lock()
+	procSetConsoleCtrlHandler.Call(0, 0)
 	err = syscall.CreateProcess(nil, cl, nil, nil, len(inherit) > 0,
 		extendedStartupInfoPresent|createUnicodeEnvironment, &env[0], wdir, &si.StartupInfo, &pi)
+	procSetConsoleCtrlHandler.Call(0, 1)
+	ctrlC.Unlock()
 	runtime.KeepAlive(inherit)
 	runtime.KeepAlive(list)
 	if err != nil {
