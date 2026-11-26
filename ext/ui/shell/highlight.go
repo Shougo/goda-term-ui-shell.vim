@@ -361,10 +361,10 @@ type lineSpan struct {
 
 // commandLineSpans are the spans of the lines of a command line, from line
 // lnum, its first one from byte col (after the prompt), with the groups of
-// groups.
+// groups.  None is [], not nil: Vim gets a List (null is no List to "for").
 func commandLineSpans(lines []string, lnum, col int, env hlEnv, groups map[string]string) []lineSpan {
 	if len(lines) == 0 || col < 1 || col-1 > len(lines[0]) {
-		return nil
+		return []lineSpan{}
 	}
 	// starts: the offset of each line in the command line.
 	parts := append([]string{lines[0][col-1:]}, lines[1:]...)
@@ -372,7 +372,7 @@ func commandLineSpans(lines []string, lnum, col int, env hlEnv, groups map[strin
 	for k := 1; k < len(parts); k++ {
 		starts[k] = starts[k-1] + len(parts[k-1]) + 1
 	}
-	var out []lineSpan
+	out := []lineSpan{}
 	for _, s := range highlightSpans(strings.Join(parts, "\n"), env) {
 		group := groups[s.kind]
 		if group == "" {

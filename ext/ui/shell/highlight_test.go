@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -99,7 +100,11 @@ func TestCommandLineSpans(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %+v\nwant %+v", got, want)
 	}
-	if got := commandLineSpans([]string{"%"}, 1, 3, env, groups); got != nil {
-		t.Errorf("no command line: %+v", got)
+	// None: a List for Vim ("[]"), not null (E1098 in its "for").
+	for _, lines := range [][]string{nil, {"%"}, {"% "}, {"% ", ""}} {
+		b, err := json.Marshal(commandLineSpans(lines, 1, 3, env, groups))
+		if err != nil || string(b) != "[]" {
+			t.Errorf("%q: %s %v", lines, b, err)
+		}
 	}
 }
