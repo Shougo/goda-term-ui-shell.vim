@@ -42,7 +42,8 @@ A descriptor (0, 1 or 2) may be before "<", ">" or ">>"; the file is a
 word (quotes, $VAR, ~; a glob must give one file), and the space before it
 may be left out ("2>err").  "make > log 2>&1" writes both into log; "make
 2>&1 > log" only the output, the error goes to the buffer.  A builtin has
-none.  Not yet on MS-Windows (an error).
+none.  On MS-Windows, they need a pseudo console (Windows 10 1809 or
+later; an error without one).
 
 Commands in a pipe ("a | b | c") run together, the output of each the
 input of the next; the error of each goes to the buffer.  Each has its own
@@ -54,7 +55,9 @@ it go to its last command.  A builtin cannot be in a pipe.  <C-c>
 Only the last command reading or writing the terminal has it as its
 controlling terminal: an earlier one cannot open /dev/tty, as a sudo or an
 ssh asking a password ("sudo dmesg | grep usb"; "echo text | sudo tee file"
-can).  Not yet on MS-Windows (an error).
+can).  On MS-Windows all of them are in one pseudo console (CTRL-C
+reaches each), which they need (Windows 10 1809 or later; an error without
+one).
 
 Its commands run one after another, as in a shell: "a && b" runs b after a
 succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes

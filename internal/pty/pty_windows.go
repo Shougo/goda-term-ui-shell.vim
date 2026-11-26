@@ -3,6 +3,7 @@ package pty
 import (
 	"errors"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ var (
 
 const (
 	procThreadAttributePseudoConsole = 0x00020016
+	procThreadAttributeHandleList    = 0x00020002
 	extendedStartupInfoPresent       = 0x00080000
 	createUnicodeEnvironment         = 0x00000400
 	startfUseStdHandles              = 0x00000100
@@ -56,12 +58,33 @@ func coord(rows, cols int) uintptr {
 }
 
 func start(p *Pty, path string, o Options) error {
-	if o.redirected() {
-		return ErrRedirect
-	}
 	if !hasConPTY() {
+		if o.redirected() {
+			return ErrRedirect
+		}
 		return startPipes(p, path, o)
 	}
+	return startConsole(p, []Stage{{path, o.Args, o.Env, o.Stdin, o.Stdout, o.Stderr}}, o)
+}
+
+// CanPipe: StartPipeline may have several commands (in a pseudo console).
+func CanPipe() bool { return hasConPTY() }
+
+// CanRedirect: Options may have files (in a pseudo console).
+func CanRedirect() bool { return hasConPTY() }
+
+func startPipeline(p *Pty, stages []Stage, o Options) error {
+	if !hasConPTY() {
+		return ErrPipe
+	}
+	return startConsole(p, stages, o)
+}
+
+// startConsole starts the stages in one pseudo console, all attached to it:
+// a CTRL-C there reaches each, and each can read a password from it.  The
+// standard handles of each are those of the console, but the pipes between
+// them and the files of their redirections.
+func startConsole(p *Pty, stages []Stage, o Options) error {
 	var inR, inW, outR, outW syscall.Handle
 	if err := syscall.CreatePipe(&inR, &inW, nil, 0); err != nil {
 		return err
@@ -84,72 +107,152 @@ func start(p *Pty, path string, o Options) error {
 	}
 	// The pseudo console has its own of these.
 	closeAll(inR, outW)
+
+	// The pipes between the stages: the commands have them once started,
+	// those of this process are closed (the end of a pipe is seen once its
+	// command is gone).
+	n := len(stages)
+	std := make([][3]syscall.Handle, n)
+	var ends []syscall.Handle
+	defer func() { closeAll(ends...) }()
 	fail := func(err error) error {
 		c.close()
 		closeAll(inW, outR)
 		return err
 	}
-
-	var size uintptr
-	procInitializeProcThreadAttList.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
-	if size == 0 {
-		return fail(errors.New("pty: InitializeProcThreadAttributeList"))
-	}
-	list := make([]byte, size)
-	if r, _, err := procInitializeProcThreadAttList.Call(uintptr(unsafe.Pointer(&list[0])), 1, 0,
-		uintptr(unsafe.Pointer(&size))); r == 0 {
-		return fail(err)
-	}
-	defer procDeleteProcThreadAttList.Call(uintptr(unsafe.Pointer(&list[0])))
-	if r, _, err := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0,
-		procThreadAttributePseudoConsole, c.handle, unsafe.Sizeof(c.handle), 0, 0); r == 0 {
-		return fail(err)
-	}
-
-	si := startupInfoEx{attributeList: &list[0]}
-	si.Cb = uint32(unsafe.Sizeof(si))
-	// Not the standard handles of this process (the pipes of Vim): those
-	// of the pseudo console.
-	si.Flags = startfUseStdHandles
-	cmdline := syscall.EscapeArg(path)
-	for _, a := range o.Args {
-		cmdline += " " + syscall.EscapeArg(a)
-	}
-	cl, err := syscall.UTF16PtrFromString(cmdline)
-	if err != nil {
-		return fail(err)
-	}
-	var dir *uint16
-	if o.Dir != "" {
-		if dir, err = syscall.UTF16PtrFromString(o.Dir); err != nil {
+	for i := range n - 1 {
+		var r, w syscall.Handle
+		if err := syscall.CreatePipe(&r, &w, nil, 0); err != nil {
 			return fail(err)
 		}
+		ends = append(ends, r, w)
+		std[i][1], std[i+1][0] = w, r
 	}
-	env := envBlock(o.Env)
-	var pi syscall.ProcessInformation
-	err = syscall.CreateProcess(nil, cl, nil, nil, false,
-		extendedStartupInfoPresent|createUnicodeEnvironment, &env[0], dir, &si.StartupInfo, &pi)
-	if err != nil {
-		return fail(err)
-	}
-	syscall.CloseHandle(pi.Thread)
-	proc, err := os.FindProcess(int(pi.ProcessId))
-	syscall.CloseHandle(pi.Process)
-	if err != nil {
-		return fail(err)
-	}
-	p.proc = proc
-	p.wait = func() (int, error) {
-		st, err := proc.Wait()
-		if err != nil {
-			return -1, err
+	for i, s := range stages {
+		for k, f := range [3]*os.File{s.Stdin, s.Stdout, s.Stderr} {
+			if f != nil {
+				std[i][k] = syscall.Handle(f.Fd())
+			}
 		}
-		return st.ExitCode(), nil
+	}
+	procs := make([]*os.Process, 0, n)
+	for i, s := range stages {
+		proc, err := createInConsole(c.handle, s, o.Dir, std[i])
+		if err != nil {
+			for _, proc := range procs {
+				_ = proc.Kill()
+			}
+			return fail(err)
+		}
+		procs = append(procs, proc)
+	}
+	p.procs, p.proc = procs, procs[n-1]
+	p.wait = func() (int, error) {
+		code := -1
+		var err error
+		for _, proc := range procs {
+			st, e := proc.Wait()
+			if e != nil {
+				code, err = -1, e
+				continue
+			}
+			code, err = st.ExitCode(), nil
+		}
+		return code, err
 	}
 	p.r = os.NewFile(uintptr(outR), "conpty-out")
 	p.w = os.NewFile(uintptr(inW), "conpty-in")
 	p.sys, p.terminal = c, true
 	return nil
+}
+
+// createInConsole runs s attached to the pseudo console hpc, with the
+// standard handles std (0: that of the console).  Those given are passed
+// as inheritable copies, and no other handle is inherited (a handle list).
+func createInConsole(hpc uintptr, s Stage, dir string, std [3]syscall.Handle) (*os.Process, error) {
+	self, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return nil, err
+	}
+	var inherit []syscall.Handle
+	defer func() {
+		for _, h := range inherit {
+			syscall.CloseHandle(h)
+		}
+	}()
+	var handles [3]syscall.Handle
+	for k, h := range std {
+		if h == 0 {
+			continue
+		}
+		var d syscall.Handle
+		if err := syscall.DuplicateHandle(self, h, self, &d, 0, true, syscall.DUPLICATE_SAME_ACCESS); err != nil {
+			return nil, err
+		}
+		inherit = append(inherit, d)
+		handles[k] = d
+	}
+
+	count := uintptr(1)
+	if len(inherit) > 0 {
+		count = 2
+	}
+	var size uintptr
+	procInitializeProcThreadAttList.Call(0, count, 0, uintptr(unsafe.Pointer(&size)))
+	if size == 0 {
+		return nil, errors.New("pty: InitializeProcThreadAttributeList")
+	}
+	list := make([]byte, size)
+	if r, _, err := procInitializeProcThreadAttList.Call(uintptr(unsafe.Pointer(&list[0])), count, 0,
+		uintptr(unsafe.Pointer(&size))); r == 0 {
+		return nil, err
+	}
+	defer procDeleteProcThreadAttList.Call(uintptr(unsafe.Pointer(&list[0])))
+	if r, _, err := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0,
+		procThreadAttributePseudoConsole, hpc, unsafe.Sizeof(hpc), 0, 0); r == 0 {
+		return nil, err
+	}
+	if len(inherit) > 0 {
+		if r, _, err := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0,
+			procThreadAttributeHandleList, uintptr(unsafe.Pointer(&inherit[0])),
+			uintptr(len(inherit))*unsafe.Sizeof(inherit[0]), 0, 0); r == 0 {
+			return nil, err
+		}
+	}
+
+	si := startupInfoEx{attributeList: &list[0]}
+	si.Cb = uint32(unsafe.Sizeof(si))
+	// Not the standard handles of this process (the pipes of Vim): those
+	// given, or (0) those of the pseudo console.
+	si.Flags = startfUseStdHandles
+	si.StdInput, si.StdOutput, si.StdErr = handles[0], handles[1], handles[2]
+	cmdline := syscall.EscapeArg(s.Path)
+	for _, a := range s.Args {
+		cmdline += " " + syscall.EscapeArg(a)
+	}
+	cl, err := syscall.UTF16PtrFromString(cmdline)
+	if err != nil {
+		return nil, err
+	}
+	var wdir *uint16
+	if dir != "" {
+		if wdir, err = syscall.UTF16PtrFromString(dir); err != nil {
+			return nil, err
+		}
+	}
+	env := envBlock(s.Env)
+	var pi syscall.ProcessInformation
+	err = syscall.CreateProcess(nil, cl, nil, nil, len(inherit) > 0,
+		extendedStartupInfoPresent|createUnicodeEnvironment, &env[0], wdir, &si.StartupInfo, &pi)
+	runtime.KeepAlive(inherit)
+	runtime.KeepAlive(list)
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseHandle(pi.Thread)
+	proc, err := os.FindProcess(int(pi.ProcessId))
+	syscall.CloseHandle(pi.Process)
+	return proc, err
 }
 
 // envBlock is env as CreateProcess takes it: "NAME=value\0...\0\0", sorted
@@ -181,14 +284,6 @@ func envBlock(env []string) []uint16 {
 
 // closeTTY: the command is gone, and so is its pseudo console (whose
 // output then ends).
-// CanPipe: StartPipeline may have several commands (not yet here).
-func CanPipe() bool { return false }
-
-func startPipeline(*Pty, []Stage, Options) error { return ErrPipe }
-
-// CanRedirect: Options may have files (not yet here).
-func CanRedirect() bool { return false }
-
 func closeTTY(p *Pty) {
 	switch s := p.sys.(type) {
 	case *console:

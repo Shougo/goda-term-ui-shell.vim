@@ -123,16 +123,16 @@ function! s:shell() abort
     " A command in ConPTY, and its output.
     call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello'})
     call s:wait('index(getline(1, "$"), "hello") >= 0 && getline("$") ==# "% "')
-    " No pipes on MS-Windows yet: an error.
-    call s:errmsgs()
-    call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello | sort'})
-    call s:check('pipe on MS-Windows', s:errmsgs() =~# 'pipes are not supported', v:true)
-    " No redirections on MS-Windows yet: an error, and no file.
-    call s:errmsgs()
+    " Pipes in the pseudo console.
+    call goda_term#ui#do_action('send', #{str: 'cmd /c "echo apple& echo banana" | findstr ban'})
+    call s:wait('index(getline(1, "$"), "banana") >= 0 && getline("$") ==# "% "')
+    call s:check('pipe on MS-Windows', index(getline(1, '$'), 'apple'), -1)
+    " Redirections: the output to a file, not to the buffer.
     let file = tempname()
-    call goda_term#ui#do_action('send', #{str: 'cmd /c echo hello > ' . fnamemodify(file, ':gs?\\?/?')})
-    call s:check('redirect on MS-Windows', [s:errmsgs() =~# 'redirections are not supported', filereadable(file)],
-          \ [v:true, v:false])
+    call goda_term#ui#do_action('send', #{str: 'cmd /c echo to-file > ' . fnamemodify(file, ':gs?\\?/?')})
+    call s:wait('getline("$") ==# "% " && filereadable(' . string(file) . ')'
+          \ . ' && join(readfile(' . string(file) . ')) =~# "to-file"')
+    call s:check('redirect on MS-Windows', index(getline(1, '$'), 'to-file'), -1)
   else
     call goda_term#ui#do_action('send', #{str: 'echo hello'})
     call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "hello") >= 0')
