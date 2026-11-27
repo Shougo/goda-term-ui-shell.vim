@@ -11,8 +11,8 @@ import (
 
 // The highlight of the command line being typed, as fast-syntax-highlighting
 // makes it in zsh: the command by what it is (unknown in red), options,
-// quotes, variables, globs, escapes, the paths that exist, and the
-// operators between the commands ("&&", "||", ";").
+// quotes, variables, globs, escapes, the paths that exist, the operators
+// between the commands ("&&", "||", ";"), and the comments.
 
 // DefaultCommandLineHighlights are the groups of the kinds of the command
 // line ("" for none).
@@ -22,6 +22,7 @@ func DefaultCommandLineHighlights() map[string]string {
 		"assignment":  "Identifier",
 		"builtin":     "Statement",
 		"command":     "Function",
+		"comment":     "Comment",
 		"directory":   "Directory",
 		"doubleQuote": "String",
 		"escape":      "SpecialChar",
@@ -51,8 +52,11 @@ type hlWord struct {
 	text       string
 	simple     bool
 	inner      []hlSpan
-	// separator: an operator between commands.
-	separator bool
+	// separator: an operator between commands; newline: a new line out of
+	// quotes (one too, but after one), of no span.
+	separator, newline bool
+	// comment: "#" at the start of a word, to the end of the line.
+	comment bool
 	// redirect: a redirection; file: its file is the next word.
 	redirect, file bool
 }
@@ -82,6 +86,11 @@ func highlightSpans(line string, env hlEnv) []hlSpan {
 		inner = append(inner, w.inner...)
 		raw := line[w.start:w.end]
 		switch {
+		case w.newline:
+			// As a separator (after one: the same).
+			command, pre, skip, file = true, "", false, false
+		case w.comment:
+			out = append(out, hlSpan{w.start, w.end, "comment"})
 		case w.redirect:
 			out = append(out, hlSpan{w.start, w.end, "redirect"})
 			file = w.file
@@ -205,11 +214,24 @@ func scanWords(line string) []hlWord {
 	for i < len(line) {
 		// Spaces, and a backslash at the end of a line.
 		switch {
-		case line[i] == ' ' || line[i] == '\t' || line[i] == '\n':
+		case line[i] == ' ' || line[i] == '\t':
+			i++
+			continue
+		case line[i] == '\n':
+			words = append(words, hlWord{start: i, end: i, newline: true})
 			i++
 			continue
 		case strings.HasPrefix(line[i:], "\\\n"):
 			i += 2
+			continue
+		case line[i] == '#' && (i == 0 || strings.IndexByte(" \t\n;&|", line[i-1]) >= 0):
+			// (As scanList reads it.)
+			end := strings.IndexByte(line[i:], '\n')
+			if end < 0 {
+				end = len(line) - i
+			}
+			words = append(words, hlWord{start: i, end: i + end, comment: true})
+			i += end
 			continue
 		}
 		if n := separatorAt(line, i); n > 0 {

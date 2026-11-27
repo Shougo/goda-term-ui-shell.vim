@@ -62,13 +62,18 @@ one).
 Its commands run one after another, as in a shell: "a && b" runs b after a
 succeeded, "a || b" after it failed, "a; b" anyway ("cd" among them changes
 the directory of the next ones).  A command interrupted ("terminate") ends
-them.  The command line is one line of the history.  "&&" or "||" at the
-end of a line goes on in the next one.
+them.  The command line is one line of the history.  "&&", "||" or "|"
+at the end of a line goes on in the next one.
 
 A command line goes on in the lines under its prompt, as in a shell: a
 quote not closed, or a backslash at the end, makes "executeLine" go to a
 new line instead.  A command line pasted with its lines is executed as one.
-A new line out of quotes would start a second command: it is an error.
+A new line out of quotes is a ";", as in a shell: lines of commands pasted
+run one after another (an empty line is nothing).  "#" at the start of a
+word out of quotes is a comment, to the end of its line: >
+	git switch main
+	git log --oneline -2    # the last two
+<
 
 The builtins:
 
@@ -104,12 +109,13 @@ commandLineHighlights	(dict)
 		command),
 		"unknown" (none of these), "option", "assignment" (NAME= of
 		NAME=value), "singleQuote", "doubleQuote", "variable",
-		"escape", "glob", "path" (one that exists).  A kind of ""
-		is not highlighted.
+		"escape", "glob", "path" (one that exists), "comment".  A
+		kind of "" is not highlighted.
 		Default: >vim
 		#{alias: 'Function', assignment: 'Identifier',
 		\ builtin: 'Statement', command: 'Function',
-		\ directory: 'Directory', doubleQuote: 'String',
+		\ comment: 'Comment', directory: 'Directory',
+		\ doubleQuote: 'String',
 		\ escape: 'SpecialChar', glob: 'Special', option: 'Type',
 		\ path: 'Underlined', precommand: 'Statement',
 		\ redirect: 'Operator', separator: 'Operator',

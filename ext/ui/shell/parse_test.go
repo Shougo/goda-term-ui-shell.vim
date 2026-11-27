@@ -122,6 +122,18 @@ func TestSplitList(t *testing.T) {
 		"a 2>&1 | b":                 {{"a 2>&1 | b", ""}},
 		"a &&\n  b":                  {{"a", ""}, {"b", "&&"}},
 		"a&&b":                       {{"a", ""}, {"b", "&&"}},
+		// Lines pasted: one after another, with their comments.
+		"git fetch x y:y --force\ngit switch y\ngit log --oneline -2    # 9ab9677, then 8cf5599\n": {
+			{"git fetch x y:y --force", ""}, {"git switch y", ";"}, {"git log --oneline -2", ";"}},
+		"# first\n\na\n  # second\nb # c\n": {{"a", ""}, {"b", ";"}},
+		"a;\nb":                             {{"a", ""}, {"b", ";"}},
+		"a ||\n\nb":                         {{"a", ""}, {"b", "||"}},
+		"a |\n  b\nc":                       {{"a |   b", ""}, {"c", ";"}},
+		"a | # it's\nb":                     {{"a |  b", ""}},
+		"echo a#b '#c' \"d\n#e\" \\#f":      {{"echo a#b '#c' \"d\n#e\" \\#f", ""}},
+		"echo a \\\nb\nc":                   {{"echo a \\\nb", ""}, {"c", ";"}},
+		"a;#b":                              {{"a", ""}},
+		"# only":                            nil,
 	} {
 		if got, err := splitList(in); err != nil || !slices.Equal(got, want) {
 			t.Errorf("splitList(%q) = %q %v, want %q", in, got, err, want)
@@ -137,7 +149,7 @@ func TestSplitList(t *testing.T) {
 	}
 	for in, want := range map[string]bool{
 		"a &&": true, "a ||  ": true, "a && b": false, "a;": false, `a && "b`: true,
-		"a && b \\": true, "a && b\nc": false,
+		"a && b \\": true, "a && b\nc": false, "a\nb &&": true, "a # it's": false, "a\nb |": true,
 	} {
 		if got := incomplete(in); got != want {
 			t.Errorf("incomplete(%q) = %v, want %v", in, got, want)

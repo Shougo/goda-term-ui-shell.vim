@@ -78,6 +78,11 @@ func TestHighlightSpans(t *testing.T) {
 		"mycmd a2>file":           {"mycmd:command", ">:redirect", "file:path"},
 		"mycmd '>' x | nocmd":     {"mycmd:command", "|:separator", "nocmd:unknown", "'>':singleQuote"},
 		"time mycmd&&FOO=1 mycmd": {"time:builtin", "mycmd:command", "&&:separator", "FOO=:assignment", "mycmd:command"},
+		// Lines pasted: a command in each, and comments.
+		"mycmd file\nnocmd -x # it's file\n#x\nmycmd": {"mycmd:command", "file:path", "nocmd:unknown",
+			"-x:option", "# it's file:comment", "#x:comment", "mycmd:command"},
+		"mycmd a#b |\n  nocmd": {"mycmd:command", "|:separator", "nocmd:unknown"},
+		"mycmd '#a' \\#b":      {"mycmd:command", "'#a':singleQuote", `\#:escape`},
 	} {
 		if got := kinds(line, env); !reflect.DeepEqual(got, want) {
 			t.Errorf("%q:\n got %q\nwant %q", line, got, want)

@@ -280,12 +280,14 @@ function! s:shell() abort
     call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "- faster|") >= 0')
     let lnum = index(getline(1, '$'), '- faster|') + 1
     call s:check('pasted output', getline(lnum - 2, lnum), ['tag', '', '- faster|'])
-    " A new line out of quotes: a second command, not run.
-    call s:errmsgs()
-    call goda_term#ui#do_action('setCommandLine', #{str: "echo 1\necho 2"})
+    " Lines of commands pasted, with comments: one after another, as in a
+    " shell.
+    call goda_term#ui#do_action('setCommandLine',
+          \ #{str: "echo one\n# not run: echo no\n\necho two    # nor: echo no"})
     call goda_term#ui#do_action('executeLine')
-    call s:check('several commands', s:errmsgs() =~# 'one at a time', v:true)
-    call s:check('several commands prompt', getline('$'), '% ')
+    call s:wait('getline("$") ==# "% " && index(getline(1, "$"), "two") >= 0')
+    let lnum = index(getline(1, '$'), 'one') + 1
+    call s:check('several commands', getline(lnum, lnum + 1), ['one', 'two'])
 
     " A command that goes on: terminated.
     call goda_term#ui#do_action('send', #{str: 'sleep 30'})

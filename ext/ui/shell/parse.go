@@ -12,8 +12,9 @@ import (
 
 // The command line, as ddt-ui-shell parses it: words with quotes and
 // backslashes, leading NAME=value assignments, $VAR and ${VAR}, ~, and
-// globs; and commands one after another with "&&", "||" and ";", and in
-// pipes ("|"). Each command is run directly, not by a shell. Its
+// globs; and commands one after another with "&&", "||", ";" and new
+// lines, and in pipes ("|"); "#" at the start of a word is a comment, to
+// the end of its line. Each command is run directly, not by a shell. Its
 // redirections are "<", ">", ">>" with a file, and ">&" with a descriptor,
 // each after a descriptor (0, 1 or 2) or not ("2>err", "2>&1").
 
@@ -97,8 +98,8 @@ func redirectAt(s string, i int) (redirection, int, error) {
 
 var (
 	errUnclosedQuote = errors.New("unclosed quote")
-	// errSeveralLines: a new line out of quotes, which ends a command in a
-	// shell. There is one command at a time here.
+	// errSeveralLines: a new line out of quotes in one command (splitList
+	// has made the commands of the lines).
 	errSeveralLines = errors.New("several command lines: one at a time")
 )
 
@@ -141,7 +142,10 @@ func splitList(input string) ([]listItem, error) {
 
 // scanList splits input at the operators out of quotes; open: it ends
 // with "&&" or "||" (the next command is still to come). A ";" at the end
-// is nothing.
+// is nothing.  A new line is a ";", as in a shell (commands pasted with
+// their lines run one after another), but after "&&", "||" or "|", where
+// the command goes on, and an empty line is nothing.  A comment ("#" at
+// the start of a word) is not in the commands.
 func scanList(input string) (items []listItem, open bool, err error) {
 	op := ""
 	start := 0
@@ -151,8 +155,14 @@ func scanList(input string) (items []listItem, open bool, err error) {
 		inSingle
 	)
 	st, esc := normal, false
+	// pipe: the last of the line out of quotes is a "|".
+	pipe := false
 	for i := 0; i < len(input); i++ {
 		c := input[i]
+		comment := st == normal && !esc && c == '#' && (i == 0 || strings.IndexByte(" \t\n;&|", input[i-1]) >= 0)
+		if st == normal && !esc && !comment && c != ' ' && c != '\t' && c != '\n' {
+			pipe = c == '|' && !(i+1 < len(input) && input[i+1] == '|')
+		}
 		switch {
 		case esc:
 			esc = false
@@ -173,6 +183,30 @@ func scanList(input string) (items []listItem, open bool, err error) {
 			st = inDouble
 		case c == '\'':
 			st = inSingle
+		case comment:
+			// A comment: out of the line.
+			end := strings.IndexByte(input[i:], '\n')
+			if end < 0 {
+				end = len(input) - i
+			}
+			input = input[:i] + input[i+end:]
+			i--
+		case c == '\n':
+			line := strings.TrimSpace(input[start:i])
+			switch {
+			case pipe:
+				// "a |" goes on with the next line (one command): of one
+				// line for it.
+				input = input[:i] + " " + input[i+1:]
+				pipe = false
+			case line == "":
+				// An empty line, or one after "&&" or "||".
+				start = i + 1
+			default:
+				items = append(items, listItem{line, op})
+				op = ";"
+				start = i + 1
+			}
 		case c == ';' || (c == '&' || c == '|') && i+1 < len(input) && input[i+1] == c:
 			// ("&" and "|" alone are words.)
 			n := 1
