@@ -686,6 +686,7 @@ func (t *instance) output(h sdk.Host, p Params, j *pty.Pty, bufnr, promptLine in
 		}
 	}()
 	r := newRenderer()
+	var da1 da1Scanner
 	interval := time.Duration(max(p.FlushIntervalMs, 1)) * time.Millisecond
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -723,6 +724,11 @@ loop:
 				break loop
 			}
 			r.write(c)
+			if n := da1.count(c); n > 0 && j.Terminal() {
+				if _, err := j.Write([]byte(strings.Repeat(da1Reply, n))); err != nil {
+					log.Printf("goda-term: %v", err)
+				}
+			}
 			if password != nil && password.MatchString(c) {
 				flush()
 				_ = h.Cmd(ctx, "normal! zz")
